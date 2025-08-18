@@ -66,6 +66,7 @@ func main() {
 		ChatIDsFile:    "data/chat_ids.json",    // Список чатов для уведомлений
 		UsersFile:      "data/users.json",       // Данные пользователей
 		TasksFile:      "data/tasks.json",       // Кэш задач
+		TemplatesFile:  "data/task_templates.json", // Шаблоны задач
 		LogFile:        "logs/bot.log",          // Файл логов
 
 		// Настройки логирования
@@ -95,6 +96,7 @@ func main() {
 		config.ChatIDsFile,
 		config.UsersFile,
 		config.TasksFile,
+		config.TemplatesFile,
 	)
 	if err != nil {
 		log.Fatalf("Ошибка инициализации хранилища: %v", err)

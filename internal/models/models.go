@@ -110,6 +110,7 @@ type Config struct {
 	KnownTasksFile  string
 	ChatIDsFile     string
 	UsersFile       string
+	TemplatesFile   string
 	LogFile         string
 	MaxLogSize      int64
 	MaxLogAge       time.Duration

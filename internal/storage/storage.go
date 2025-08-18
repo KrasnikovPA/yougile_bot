@@ -28,12 +28,13 @@ type Storage struct {
 	chatIDsFile    string
 	usersFile      string
 	tasksFile      string
+	templatesFile  string
 
 	metrics *metrics.Metrics // Метрики хранилища
 }
 
 // NewStorage создает новое хранилище
-func NewStorage(knownTasksFile, chatIDsFile, usersFile, tasksFile string) (*Storage, error) {
+func NewStorage(knownTasksFile, chatIDsFile, usersFile, tasksFile, templatesFile string) (*Storage, error) {
 	s := &Storage{
 		knownTasks:      make(map[string]bool),
 		chatIDs:         make([]int64, 0),
@@ -44,6 +45,7 @@ func NewStorage(knownTasksFile, chatIDsFile, usersFile, tasksFile string) (*Stor
 		tasksFile:       tasksFile,
 		chatIDsFile:     chatIDsFile,
 		usersFile:       usersFile,
+		templatesFile:   templatesFile,
 	}
 
 	if err := s.loadData(); err != nil {
@@ -65,6 +67,9 @@ func (s *Storage) loadData() error {
 		return err
 	}
 	if err := s.LoadFAQ(); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := s.LoadTaskTemplates(); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
@@ -93,6 +98,11 @@ func (s *Storage) SaveData() error {
 		return err
 	}
 	if err := s.saveJSON(s.usersFile, s.users); err != nil {
+		s.metrics.IncAPIErrors()
+		return err
+	}
+
+	if err := s.SaveTaskTemplates(); err != nil {
 		s.metrics.IncAPIErrors()
 		return err
 	}
