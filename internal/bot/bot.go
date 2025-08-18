@@ -33,13 +33,7 @@ var (
 	btnSkip     = commentMenu.Text("⏭ Без комментария")
 )
 
-// TaskCreationState хранит состояние создания задачи
-type TaskCreationState struct {
-	StartTime time.Time
-	Title     string
-	Stage     string // "waiting_title", "waiting_comment"
-	TaskID    int64  // ID созданной задачи
-}
+// Используем TaskCreationState из models
 
 // RegistrationState хранит состояние процесса регистрации
 type RegistrationState struct {
@@ -60,7 +54,7 @@ type Bot struct {
 	metrics            *metrics.Metrics                 // метрики бота
 	regStates          map[int64]*RegistrationState     // ключ - TelegramID
 	addressChange      map[int64]string                 // этап изменения адреса: "building" или "room"
-	taskCreationStates map[int64]*TaskCreationState     // состояния создания задач
+	taskCreationStates map[int64]*models.TaskCreationState     // состояния создания задач
 	commentStates      map[int64]int64                  // ожидание комментария: ключ - TelegramID, значение - TaskID
 	timeStates         map[int64]int64                  // ожидание времени: ключ - TelegramID, значение - TaskID
 	pendingReqs        map[int64]*models.PendingRequest // запросы, ожидающие подтверждения
@@ -93,7 +87,7 @@ func NewBot(token string, storage *storage.Storage, yougileToken string, boardID
 		addressChange:      make(map[int64]string),
 		pendingReqs:        make(map[int64]*models.PendingRequest),
 		adminActions:       make(map[int64]*AdminAction),
-		taskCreationStates: make(map[int64]*TaskCreationState),
+		taskCreationStates: make(map[int64]*models.TaskCreationState),
 		commentStates:      make(map[int64]int64),
 		timeStates:         make(map[int64]int64),
 		adminUserStates:    make(map[int64]*AdminUserState),
@@ -149,6 +143,14 @@ func (b *Bot) setupHandlers() {
 			return b.handleFAQCallback(c)
 		}
 
+		if strings.HasPrefix(c.Callback().Data, "task_step|") {
+			return b.handleTaskStepCallback(c)
+		}
+
+		if strings.HasPrefix(c.Callback().Data, "task_select|") {
+			return b.handleTaskSelectCallback(c)
+		}
+
 		switch c.Callback().Data {
 		case "select_user":
 			return b.handleSelectUser(c)
@@ -161,7 +163,7 @@ func (b *Bot) setupHandlers() {
 	})
 
 	// Обработчики задач
-	b.bot.Handle(&btnNewTask, b.handleNewTask)
+	b.bot.Handle(&btnNewTask, b.handleTaskConstructor) // Используем конструктор вместо простого создания
 	b.bot.Handle(&btnSkip, b.handleSkip)
 
 	// Обработчик текстовых сообщений
