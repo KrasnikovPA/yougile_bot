@@ -17,9 +17,9 @@ type Storage struct {
 	knownTasks      map[string]bool
 	chatIDs         []int64
 	users           map[int64]*models.User
-	usersByUsername map[string]int64        // Добавляем индекс для поиска по username
-	faq             models.FAQData          // FAQ данные
-	taskTemplates   models.TaskTemplates    // Шаблоны задач
+	usersByUsername map[string]int64     // Добавляем индекс для поиска по username
+	faq             models.FAQData       // FAQ данные
+	taskTemplates   models.TaskTemplates // Шаблоны задач
 	tasks           []*models.Task
 	mu              sync.RWMutex
 	isDirty         bool // Флаг изменения данных

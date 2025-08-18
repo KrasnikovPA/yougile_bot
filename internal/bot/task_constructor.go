@@ -21,7 +21,7 @@ func (b *Bot) handleTaskConstructor(c telebot.Context) error {
 	b.taskCreationStates[c.Sender().ID] = &models.TaskCreationState{
 		StartTime:   time.Now(),
 		CurrentStep: "initial",
-		Stage:      "waiting_title", // для обратной совместимости
+		Stage:       "waiting_title", // для обратной совместимости
 		Answers:     make(map[string]string),
 		IsTemplated: true,
 	}
@@ -62,7 +62,7 @@ func (b *Bot) handleTaskStepCallback(c telebot.Context) error {
 
 	// Сохраняем ответ
 	state.Answers[state.CurrentStep] = optionID
-	
+
 	// Если следующий шаг "manual_input", переходим к ручному вводу
 	if nextStep == "manual_input" {
 		state.CurrentStep = "manual_input"

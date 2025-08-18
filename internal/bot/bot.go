@@ -51,15 +51,15 @@ type Bot struct {
 	regTimeout         time.Duration
 	minMsgLen          int
 	notifications      chan string
-	metrics            *metrics.Metrics                 // метрики бота
-	regStates          map[int64]*RegistrationState     // ключ - TelegramID
-	addressChange      map[int64]string                 // этап изменения адреса: "building" или "room"
-	taskCreationStates map[int64]*models.TaskCreationState     // состояния создания задач
-	commentStates      map[int64]int64                  // ожидание комментария: ключ - TelegramID, значение - TaskID
-	timeStates         map[int64]int64                  // ожидание времени: ключ - TelegramID, значение - TaskID
-	pendingReqs        map[int64]*models.PendingRequest // запросы, ожидающие подтверждения
-	adminActions       map[int64]*AdminAction           // состояния действий администратора
-	adminUserStates    map[int64]*AdminUserState        // состояния управления пользователями
+	metrics            *metrics.Metrics                    // метрики бота
+	regStates          map[int64]*RegistrationState        // ключ - TelegramID
+	addressChange      map[int64]string                    // этап изменения адреса: "building" или "room"
+	taskCreationStates map[int64]*models.TaskCreationState // состояния создания задач
+	commentStates      map[int64]int64                     // ожидание комментария: ключ - TelegramID, значение - TaskID
+	timeStates         map[int64]int64                     // ожидание времени: ключ - TelegramID, значение - TaskID
+	pendingReqs        map[int64]*models.PendingRequest    // запросы, ожидающие подтверждения
+	adminActions       map[int64]*AdminAction              // состояния действий администратора
+	adminUserStates    map[int64]*AdminUserState           // состояния управления пользователями
 }
 
 // NewBot создает нового бота
