@@ -93,6 +93,15 @@ type PendingRequest struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+// FAQItem представляет элемент FAQ
+type FAQItem struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+}
+
+// FAQData содержит все элементы FAQ
+type FAQData map[string]FAQItem
+
 // Config содержит конфигурацию приложения
 type Config struct {
 	YougileToken    string

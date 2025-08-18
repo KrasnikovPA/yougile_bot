@@ -18,6 +18,7 @@ type Storage struct {
 	chatIDs         []int64
 	users           map[int64]*models.User
 	usersByUsername map[string]int64 // Добавляем индекс для поиска по username
+	faq             models.FAQData   // FAQ данные
 	tasks           []*models.Task
 	mu              sync.RWMutex
 	isDirty         bool // Флаг изменения данных
@@ -60,6 +61,9 @@ func (s *Storage) loadData() error {
 		return err
 	}
 	if err := s.loadJSON(s.usersFile, &s.users); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := s.LoadFAQ(); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil

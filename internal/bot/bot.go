@@ -21,6 +21,7 @@ var (
 	btnHelp    = mainMenu.Text("❓ Помощь")
 	btnAddress = mainMenu.Text("🏠 Изменить адрес")
 	btnNewTask = mainMenu.Text("📝 Новая задача")
+	btnFAQ     = mainMenu.Text("ℹ️ Частые вопросы")
 
 	// Кнопки для администратора
 	adminMenu  = &telebot.ReplyMarkup{ResizeKeyboard: true}
@@ -102,6 +103,7 @@ func NewBot(token string, storage *storage.Storage, yougileToken string, boardID
 	mainMenu.Reply(
 		mainMenu.Row(btnNewTask),
 		mainMenu.Row(btnHelp, btnAddress),
+		mainMenu.Row(btnFAQ),
 	)
 
 	// Настраиваем клавиатуру для администратора
@@ -125,6 +127,7 @@ func (b *Bot) setupHandlers() {
 	b.bot.Handle(&btnAddress, b.handleChangeAddress)
 	b.bot.Handle(&btnApprove, b.handleApprove)
 	b.bot.Handle(&btnReject, b.handleReject)
+	b.bot.Handle(&btnFAQ, b.handleFAQ)
 
 	// Команды администратора
 	b.bot.Handle("/admin", b.handleAdminActions)
@@ -142,6 +145,10 @@ func (b *Bot) setupHandlers() {
 
 	// Callback-обработчики
 	b.bot.Handle(telebot.OnCallback, func(c telebot.Context) error {
+		if c.Callback().Unique == "faq" {
+			return b.handleFAQCallback(c)
+		}
+
 		switch c.Callback().Data {
 		case "select_user":
 			return b.handleSelectUser(c)
