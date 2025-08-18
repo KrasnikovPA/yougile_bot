@@ -423,56 +423,8 @@ func (b *Bot) handleMessage(c telebot.Context) error {
 	}
 
 	// Проверяем, находится ли пользователь в процессе создания задачи
-	if taskState, ok := b.taskCreationStates[c.Sender().ID]; ok {
-		msg := strings.TrimSpace(c.Text())
-
-		switch taskState.Stage {
-		case "waiting_title":
-			if len(msg) < 3 {
-				return c.Send("Название задачи должно содержать минимум 3 символа. Пожалуйста, попробуйте снова.")
-			}
-			taskState.Title = msg
-			taskState.Stage = "waiting_comment"
-			return c.Send("Отлично! Теперь вы можете добавить комментарий или фотографию к задаче.", commentMenu)
-
-		case "waiting_description":
-			if len(msg) < b.minMsgLen {
-				return c.Send(fmt.Sprintf("Описание слишком короткое. Минимальная длина: %d символов.", b.minMsgLen))
-			}
-
-			// Создаем новую задачу
-			task := &models.Task{
-				Title:       taskState.Title,
-				Description: msg,
-				Status:      models.TaskStatusNew,
-				BoardID:     b.boardID, // Нужно добавить boardID в структуру бота
-				Priority:    1,         // По умолчанию обычный приоритет
-				Assignee:    strconv.FormatInt(c.Sender().ID, 10),
-				Labels:      []string{}, // Пустой список меток
-			}
-
-			// Отправляем задачу в Yougile
-			if err := b.yougileClient.CreateTask(task); err != nil { // Нужно добавить yougileClient в структуру бота
-				log.Printf("Ошибка создания задачи в Yougile: %v", err)
-				return c.Send("Произошла ошибка при создании задачи. Пожалуйста, попробуйте позже.")
-			}
-
-			// Сохраняем задачу локально
-			b.storage.AddTask(task)
-			if err := b.storage.SaveData(); err != nil {
-				log.Printf("Ошибка сохранения задачи: %v", err)
-				// Не возвращаем ошибку пользователю, т.к. задача уже создана в Yougile
-			}
-			delete(b.taskCreationStates, c.Sender().ID)
-			return c.Send(fmt.Sprintf("Задача успешно создана!\n\n📝 %s\n\nОписание:\n%s", task.Title, task.Description))
-		}
-	} else {
-		// Если пользователь не в процессе создания задачи, начинаем новую
-		b.taskCreationStates[c.Sender().ID] = &TaskCreationState{
-			StartTime: time.Now(),
-			Stage:     "waiting_title",
-		}
-		return c.Send("Пожалуйста, введите название задачи.", mainMenu)
+	if _, ok := b.taskCreationStates[c.Sender().ID]; ok {
+		return b.handleTaskText(c)
 	}
 
 	return nil
