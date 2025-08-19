@@ -19,9 +19,12 @@ import (
 
 var (
 	// ErrUnauthorized возвращается при ошибке авторизации с API Yougile.
+	// ErrUnauthorized возвращается при ошибке авторизации с API Yougile.
 	ErrUnauthorized = fmt.Errorf("unauthorized")
-	ErrNotFound     = fmt.Errorf("not found")
-	ErrRateLimit    = fmt.Errorf("rate limit exceeded")
+	// ErrNotFound возвращается, когда запрашиваемый ресурс не найден в Yougile API.
+	ErrNotFound = fmt.Errorf("not found")
+	// ErrRateLimit возвращается при превышении лимита запросов к API.
+	ErrRateLimit = fmt.Errorf("rate limit exceeded")
 )
 
 // TaskCache представляет кэш задач

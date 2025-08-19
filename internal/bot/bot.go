@@ -554,12 +554,13 @@ func (b *Bot) handleApprove(c telebot.Context) error {
 		delete(b.pendingReqs, userID)
 
 		// Уведомляем пользователя
-		msg := "Ваш запрос одобрен администратором."
+		var userMsg string
 		if req.Type == "registration" {
-			msg = "Ваша регистрация подтверждена! Теперь вы можете использовать бота."
+			userMsg = "Ваша регистрация подтверждена! Теперь вы можете использовать бота."
 		} else {
-			msg = "Ваш новый адрес подтвержден."
+			userMsg = "Ваш новый адрес подтвержден."
 		}
+		msg := userMsg
 		if _, err := b.bot.Send(&telebot.User{ID: userID}, msg); err != nil {
 			log.Printf("Ошибка отправки уведомления пользователю %d: %v", userID, err)
 		}
@@ -613,13 +614,13 @@ func (b *Bot) handleReject(c telebot.Context) error {
 		delete(b.pendingReqs, userID)
 
 		// Уведомляем пользователя
-		msg := "Ваш запрос отклонен администратором."
+		var userMsg string
 		if req.Type == "registration" {
-			msg = "Ваша регистрация отклонена. Пожалуйста, свяжитесь с администратором."
+			userMsg = "Ваша регистрация отклонена. Пожалуйста, свяжитесь с администратором."
 		} else {
-			msg = "Изменение адреса отклонено. Пожалуйста, свяжитесь с администратором."
+			userMsg = "Изменение адреса отклонено. Пожалуйста, свяжитесь с администратором."
 		}
-		if _, err := b.bot.Send(&telebot.User{ID: userID}, msg); err != nil {
+		if _, err := b.bot.Send(&telebot.User{ID: userID}, userMsg); err != nil {
 			log.Printf("Ошибка отправки уведомления пользователю %d: %v", userID, err)
 		}
 
