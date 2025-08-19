@@ -62,12 +62,12 @@ func main() {
 		TelegramToken: os.Getenv("TELEGRAM_TOKEN"), // Токен Telegram бота
 
 		// Пути к файлам для хранения данных
-		KnownTasksFile: "data/known_tasks.json", // Список известных задач
-		ChatIDsFile:    "data/chat_ids.json",    // Список чатов для уведомлений
-		UsersFile:      "data/users.json",       // Данные пользователей
-		TasksFile:      "data/tasks.json",       // Кэш задач
+		KnownTasksFile: "data/known_tasks.json",    // Список известных задач
+		ChatIDsFile:    "data/chat_ids.json",       // Список чатов для уведомлений
+		UsersFile:      "data/users.json",          // Данные пользователей
+		TasksFile:      "data/tasks.json",          // Кэш задач
 		TemplatesFile:  "data/task_templates.json", // Шаблоны задач
-		LogFile:        "logs/bot.log",          // Файл логов
+		LogFile:        "logs/bot.log",             // Файл логов
 
 		// Настройки логирования
 		MaxLogSize: 10 * 1024 * 1024,    // Максимальный размер лог-файла: 10 MB

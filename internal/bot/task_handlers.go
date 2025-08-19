@@ -17,7 +17,7 @@ func (b *Bot) handleNewTask(c telebot.Context) error {
 		return c.Send("Пожалуйста, сначала зарегистрируйтесь и дождитесь подтверждения администратора.")
 	}
 
-	b.taskCreationStates[c.Sender().ID] = &TaskCreationState{
+	b.taskCreationStates[c.Sender().ID] = &models.TaskCreationState{
 		StartTime: time.Now(),
 		Stage:     "waiting_title",
 	}

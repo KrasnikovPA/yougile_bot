@@ -26,7 +26,7 @@ func (s *Storage) LoadTaskTemplates() error {
 func (s *Storage) GetTaskTemplate(step string) (models.TaskTemplateStep, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	template, exists := s.taskTemplates[step]
 	return template, exists
 }
