@@ -115,6 +115,8 @@ func (b *Bot) setupHandlers() {
 	b.bot.Handle("/start", b.handleStart)
 	b.bot.Handle("/help", b.handleHelp)
 	b.bot.Handle("/address", b.handleChangeAddress)
+	// Команда для создания новой задачи через конструктор
+	b.bot.Handle("/newtask", b.handleTaskConstructor)
 
 	// Обработчики кнопок
 	b.bot.Handle(&btnHelp, b.handleHelp)
@@ -182,9 +184,8 @@ func (b *Bot) handleStart(c telebot.Context) error {
 	if user, exists := b.storage.GetUser(c.Sender().ID); exists {
 		if user.Approved {
 			return c.Send("Вы уже зарегистрированы и подтверждены в системе.", mainMenu)
-		} else {
-			return c.Send("Ваша заявка на регистрацию уже находится на рассмотрении.")
 		}
+		return c.Send("Ваша заявка на регистрацию уже находится на рассмотрении.")
 	}
 
 	// Проверяем, есть ли уже администраторы
@@ -398,7 +399,9 @@ func (b *Bot) handleMessage(c telebot.Context) error {
 				return c.Send("Произошла ошибка при сохранении изменений.")
 			}
 
-			b.bot.Send(&telebot.User{ID: targetID}, "Вам были предоставлены права администратора.")
+			if _, err := b.bot.Send(&telebot.User{ID: targetID}, "Вам были предоставлены права администратора."); err != nil {
+				log.Printf("Ошибка отправки уведомления пользователю %d: %v", targetID, err)
+			}
 			delete(b.adminActions, c.Sender().ID)
 			return c.Send(fmt.Sprintf("Пользователь %s %s назначен администратором.",
 				targetUser.FirstName, targetUser.LastName))
@@ -417,7 +420,9 @@ func (b *Bot) handleMessage(c telebot.Context) error {
 				return c.Send("Произошла ошибка при сохранении изменений.")
 			}
 
-			b.bot.Send(&telebot.User{ID: targetID}, "С вас были сняты права администратора.")
+			if _, err := b.bot.Send(&telebot.User{ID: targetID}, "С вас были сняты права администратора."); err != nil {
+				log.Printf("Ошибка отправки уведомления пользователю %d: %v", targetID, err)
+			}
 			delete(b.adminActions, c.Sender().ID)
 			return c.Send(fmt.Sprintf("С пользователя %s %s сняты права администратора.",
 				targetUser.FirstName, targetUser.LastName))
@@ -555,7 +560,9 @@ func (b *Bot) handleApprove(c telebot.Context) error {
 		} else {
 			msg = "Ваш новый адрес подтвержден."
 		}
-		b.bot.Send(&telebot.User{ID: userID}, msg)
+		if _, err := b.bot.Send(&telebot.User{ID: userID}, msg); err != nil {
+			log.Printf("Ошибка отправки уведомления пользователю %d: %v", userID, err)
+		}
 
 		return c.Send("Запрос подтвержден.")
 	}
@@ -612,7 +619,9 @@ func (b *Bot) handleReject(c telebot.Context) error {
 		} else {
 			msg = "Изменение адреса отклонено. Пожалуйста, свяжитесь с администратором."
 		}
-		b.bot.Send(&telebot.User{ID: userID}, msg)
+		if _, err := b.bot.Send(&telebot.User{ID: userID}, msg); err != nil {
+			log.Printf("Ошибка отправки уведомления пользователю %d: %v", userID, err)
+		}
 
 		return c.Send("Запрос отклонен.")
 	}

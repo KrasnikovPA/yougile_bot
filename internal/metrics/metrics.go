@@ -1,3 +1,4 @@
+// Package metrics содержит счётчики и метрики, используемые в приложении.
 package metrics
 
 import (

@@ -1,0 +1,27 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - errcheck
+    - gofmt
+    - goimports
+    - revive
+    - bodyclose
+    - misspell
+  disable:
+    - gocyclo
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+revive:
+  severity: warning
+  rules:
+    - name: indent-error-flow
+      severity: warning

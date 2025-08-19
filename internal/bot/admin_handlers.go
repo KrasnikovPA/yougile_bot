@@ -1,3 +1,4 @@
+// Package bot содержит обработчики и логику Telegram-бота.
 package bot
 
 import (
@@ -125,8 +126,9 @@ func (b *Bot) handlePromoteAdmin(c telebot.Context) error {
 		return c.Send("Произошла ошибка при сохранении изменений.")
 	}
 
-	b.bot.Send(&telebot.User{ID: targetID},
-		"Вам были предоставлены права администратора.")
+	if _, err := b.bot.Send(&telebot.User{ID: targetID}, "Вам были предоставлены права администратора."); err != nil {
+		log.Printf("Ошибка отправки уведомления пользователю %d: %v", targetID, err)
+	}
 
 	return c.Send(fmt.Sprintf("Пользователь %s %s назначен администратором.",
 		targetUser.FirstName, targetUser.LastName))
@@ -178,8 +180,9 @@ func (b *Bot) handleDemoteAdmin(c telebot.Context) error {
 		return c.Send("Произошла ошибка при сохранении изменений.")
 	}
 
-	b.bot.Send(&telebot.User{ID: targetID},
-		"С вас были сняты права администратора.")
+	if _, err := b.bot.Send(&telebot.User{ID: targetID}, "С вас были сняты права администратора."); err != nil {
+		log.Printf("Ошибка отправки уведомления пользователю %d: %v", targetID, err)
+	}
 
 	return c.Send(fmt.Sprintf("С пользователя %s %s сняты права администратора.",
 		targetUser.FirstName, targetUser.LastName))

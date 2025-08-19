@@ -14,14 +14,16 @@ import (
 // Тест проверяет, что UploadAttachment делает retry при 500 и успешно завершается при 201
 func TestUploadAttachmentRetries(t *testing.T) {
 	calls := 0
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		if calls == 1 {
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
-		io.WriteString(w, `{"data": {"id": 123}}`)
+		if _, err := io.WriteString(w, `{"data": {"id": 123}}`); err != nil {
+			t.Fatalf("Ошибка записи тела ответа в тесте: %v", err)
+		}
 	}))
 	defer ts.Close()
 

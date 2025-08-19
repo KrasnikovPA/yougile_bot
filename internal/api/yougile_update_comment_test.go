@@ -24,7 +24,9 @@ func TestUpdateTaskRetries(t *testing.T) {
 			t.Fatalf("expected PUT, got %s", r.Method)
 		}
 		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, `{"data": {}}`)
+		if _, err := io.WriteString(w, `{"data": {}}`); err != nil {
+			t.Fatalf("Ошибка записи тела ответа в тесте: %v", err)
+		}
 	}))
 	defer ts.Close()
 
@@ -56,7 +58,9 @@ func TestAddCommentRetries(t *testing.T) {
 			t.Fatalf("expected POST, got %s", r.Method)
 		}
 		w.WriteHeader(http.StatusCreated)
-		io.WriteString(w, `{"data": {"id": 999}}`)
+		if _, err := io.WriteString(w, `{"data": {"id": 999}}`); err != nil {
+			t.Fatalf("Ошибка записи тела ответа в тесте: %v", err)
+		}
 	}))
 	defer ts.Close()
 

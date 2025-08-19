@@ -1,3 +1,4 @@
+// Package bot содержит обработчики и логику Telegram-бота.
 package bot
 
 import (
@@ -9,6 +10,8 @@ import (
 	"gopkg.in/telebot.v3"
 )
 
+// TaskVerification описывает состояние проверки корректности созданной задачи
+// (сравнение локально отправлённой задачи и результата в Yougile).
 type TaskVerification struct {
 	OriginalTask    models.Task
 	OriginalSender  models.User
@@ -143,7 +146,19 @@ func (b *Bot) handleVerificationFailure(v *TaskVerification, reason string) {
 func (b *Bot) notifyError(v *TaskVerification, reason string) {
 	// Уведомляем отправителя
 	errorMsg := fmt.Sprintf("Произошла проблема с созданием задачи: %s\nПожалуйста, обратитесь к администратору.", reason)
-	b.bot.Send(&telebot.User{ID: v.OriginalSender.TelegramID}, errorMsg)
+	if _, err := b.bot.Send(&telebot.User{ID: v.OriginalSender.TelegramID}, errorMsg); err != nil {
+		// Логируем ошибку, но продолжаем уведомлять администраторов
+		// чтобы они могли принять меры вручную.
+		// Не возвращаем ошибку, потому что вызывающая горутина ожидает завершения.
+		// Просто логируем проблему.
+		// Используем стандартный log здесь — пакет bot не импортирует log ранее.
+		// Добавим импорт логирования сверху файла.
+		// (Импорт предварительно уже есть в файле; если нет — поправим отдельно.)
+		// Но log импорт отсутствует, добавим его.
+		// Для совместимости: используем fmt.Printf как fallback.
+		// Поскольку в этом файле нет импорта log, выполню простое fmt.Printf.
+		fmt.Printf("Ошибка отправки уведомления отправителю %d: %v\n", v.OriginalSender.TelegramID, err)
+	}
 
 	// Формируем сообщение для администраторов
 	adminMsg := fmt.Sprintf(`❌ Ошибка создания задачи
@@ -167,7 +182,9 @@ func (b *Bot) notifyError(v *TaskVerification, reason string) {
 	users := b.storage.GetUsers()
 	for _, user := range users {
 		if user.Role == models.RoleAdmin {
-			b.bot.Send(&telebot.User{ID: user.TelegramID}, adminMsg)
+			if _, err := b.bot.Send(&telebot.User{ID: user.TelegramID}, adminMsg); err != nil {
+				fmt.Printf("Ошибка отправки уведомления администратору %d: %v\n", user.TelegramID, err)
+			}
 		}
 	}
 }

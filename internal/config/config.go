@@ -1,3 +1,4 @@
+// Package config читает и хранит конфигурацию приложения.
 package config
 
 import (

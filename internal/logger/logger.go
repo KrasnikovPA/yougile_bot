@@ -1,3 +1,4 @@
+// Package logger предоставляет простую обёртку для логирования в файл.
 package logger
 
 import (
@@ -108,7 +109,10 @@ func (w *RotateWriter) openFile() error {
 
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		if cerr := f.Close(); cerr != nil {
+			// Пытаемся закрыть файл и логируем, если не удалось
+			fmt.Printf("Ошибка закрытия файла логов после Stat failure: %v\n", cerr)
+		}
 		return err
 	}
 

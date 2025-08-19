@@ -1,3 +1,4 @@
+// Package storage реализует простое JSON-хранилище для данных бота.
 package storage
 
 import (

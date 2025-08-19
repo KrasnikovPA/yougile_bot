@@ -10,23 +10,9 @@ import (
 	"gopkg.in/telebot.v3"
 )
 
-// handleNewTask обрабатывает команду создания новой задачи
-func (b *Bot) handleNewTask(c telebot.Context) error {
-	user, exists := b.storage.GetUser(c.Sender().ID)
-	if !exists || !user.Approved {
-		return c.Send("Пожалуйста, сначала зарегистрируйтесь и дождитесь подтверждения администратора.")
-	}
-
-	b.taskCreationStates[c.Sender().ID] = &models.TaskCreationState{
-		StartTime: time.Now(),
-		Stage:     "waiting_title",
-	}
-
-	msg := "Введите название задачи.\n\n" +
-		"После создания задачи вы сможете добавить комментарий и прикрепить фотографию."
-
-	return c.Send(msg)
-}
+// handleNewTask ранее использовалась для простого создания задачи.
+// Сейчас заменена на более гибкий конструктор задач: handleTaskConstructor.
+// Функция удалена как неиспользуемая, чтобы убрать предупреждение компилятора/IDE.
 
 // handleSkip обрабатывает нажатие кнопки "Без комментария"
 func (b *Bot) handleSkip(c telebot.Context) error {

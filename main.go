@@ -1,3 +1,4 @@
+// Программа запускает Telegram-бота и фоновые службы для интеграции с Yougile.
 package main
 
 import (

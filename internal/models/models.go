@@ -1,3 +1,5 @@
+// Package models содержит структуры данных, используемые в проекте:
+// задачи, пользователи, комментарии и конфигурация.
 package models
 
 import "time"
@@ -6,9 +8,13 @@ import "time"
 type TaskStatus string
 
 const (
-	TaskStatusNew       TaskStatus = "new"
-	TaskStatusInWork    TaskStatus = "in_work"
-	TaskStatusDone      TaskStatus = "done"
+	// TaskStatusNew означает, что задача только что создана и ещё не назначена.
+	TaskStatusNew TaskStatus = "new"
+	// TaskStatusInWork означает, что над задачей ведётся работа.
+	TaskStatusInWork TaskStatus = "in_work"
+	// TaskStatusDone означает, что задача выполнена.
+	TaskStatusDone TaskStatus = "done"
+	// TaskStatusCancelled означает, что задача отменена.
 	TaskStatusCancelled TaskStatus = "cancelled"
 )
 
@@ -16,8 +22,10 @@ const (
 type AttachmentType string
 
 const (
+	// AttachmentTypeImage — вложение является изображением.
 	AttachmentTypeImage AttachmentType = "image"
-	AttachmentTypeFile  AttachmentType = "file"
+	// AttachmentTypeFile — вложение является файлом произвольного типа.
+	AttachmentTypeFile AttachmentType = "file"
 )
 
 // Attachment представляет вложение в комментарии или задаче
@@ -65,8 +73,10 @@ type Task struct {
 type UserRole string
 
 const (
+	// RoleAdmin — роль администратора.
 	RoleAdmin UserRole = "admin"
-	RoleUser  UserRole = "user"
+	// RoleUser — роль обычного пользователя.
+	RoleUser UserRole = "user"
 )
 
 // User представляет пользователя бота

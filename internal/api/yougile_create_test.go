@@ -24,7 +24,9 @@ func TestCreateTaskRetriesAndParseID(t *testing.T) {
 			t.Fatalf("expected POST, got %s", r.Method)
 		}
 		w.WriteHeader(http.StatusCreated)
-		io.WriteString(w, `{"data": {"id": 777}}`)
+		if _, err := io.WriteString(w, `{"data": {"id": 777}}`); err != nil {
+			t.Fatalf("Ошибка записи тела ответа в тесте: %v", err)
+		}
 	}))
 	defer ts.Close()
 

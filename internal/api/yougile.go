@@ -1,3 +1,4 @@
+// Package api реализует клиент для взаимодействия с Yougile API.
 package api
 
 import (
@@ -17,6 +18,7 @@ import (
 )
 
 var (
+	// ErrUnauthorized возвращается при ошибке авторизации с API Yougile.
 	ErrUnauthorized = fmt.Errorf("unauthorized")
 	ErrNotFound     = fmt.Errorf("not found")
 	ErrRateLimit    = fmt.Errorf("rate limit exceeded")
@@ -71,7 +73,6 @@ type Client struct {
 	cache      *TaskCache
 	mu         sync.RWMutex
 	metrics    *metrics.Metrics
-	lastCheck  time.Time
 	baseURL    string
 	// retry policy for GET requests
 	retryCount int
@@ -153,18 +154,19 @@ func (c *Client) GetTasks(limit int) ([]models.Task, error) {
 
 		// Close body if present and decide whether to retry
 		if resp != nil && resp.Body != nil {
-			resp.Body.Close()
+			if cerr := resp.Body.Close(); cerr != nil {
+				log.Printf("Ошибка закрытия тела ответа в GetTasks: %v", cerr)
+			}
 		}
 
 		// consider retry on network error or 5xx or 429
 		if err == nil {
-			// err == nil but bad status
-			if resp != nil && (resp.StatusCode >= 500 || resp.StatusCode == 429) {
-				// retry
-			} else {
+			// err == nil but bad status -> decide whether to retry
+			if resp == nil || (resp.StatusCode < 500 && resp.StatusCode != 429) {
 				// non-retriable status
 				return nil, fmt.Errorf("неверный код ответа: %d", resp.StatusCode)
 			}
+			// otherwise: 5xx or 429 -> retry
 		}
 
 		// sleep with exponential backoff + jitter
@@ -178,7 +180,11 @@ func (c *Client) GetTasks(limit int) ([]models.Task, error) {
 	if resp == nil {
 		return nil, fmt.Errorf("ошибка выполнения запроса: пустой ответ")
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			log.Printf("Ошибка закрытия тела ответа в GetTasks (defer): %v", cerr)
+		}
+	}()
 
 	var result struct {
 		Data []models.Task `json:"data"`
@@ -233,19 +239,25 @@ func (c *Client) CreateTask(task *models.Task) error {
 				if c.metrics != nil {
 					c.metrics.IncAPIErrors()
 				}
-				resp.Body.Close()
+				if cerr := resp.Body.Close(); cerr != nil {
+					log.Printf("Ошибка закрытия тела ответа в CreateTask после Decode failure: %v", cerr)
+				}
 				return true, nil // treat as success
 			}
 			if result.Data.ID != 0 {
 				task.ID = result.Data.ID
 			}
-			resp.Body.Close()
+			if cerr := resp.Body.Close(); cerr != nil {
+				log.Printf("Ошибка закрытия тела ответа в CreateTask: %v", cerr)
+			}
 			return true, nil
 		}
 
 		var bodyBuf bytes.Buffer
 		_, _ = bodyBuf.ReadFrom(resp.Body)
-		resp.Body.Close()
+		if cerr := resp.Body.Close(); cerr != nil {
+			log.Printf("Ошибка закрытия тела ответа в CreateTask (error path): %v", cerr)
+		}
 		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
 			return false, fmt.Errorf("неверный код ответа (повторяем): %d, body: %s", resp.StatusCode, bodyBuf.String())
 		}
@@ -279,7 +291,9 @@ func (c *Client) UpdateTask(task *models.Task) error {
 		if resp.Body != nil {
 			var bodyBuf bytes.Buffer
 			_, _ = bodyBuf.ReadFrom(resp.Body)
-			resp.Body.Close()
+			if cerr := resp.Body.Close(); cerr != nil {
+				log.Printf("Ошибка закрытия тела ответа в UpdateTask: %v", cerr)
+			}
 		}
 		if resp.StatusCode == http.StatusOK {
 			return true, nil
@@ -343,12 +357,16 @@ func (c *Client) UploadAttachment(taskID int64, attachment *models.Attachment, d
 			return false, fmt.Errorf("пустой ответ от сервера")
 		}
 		if resp.StatusCode == http.StatusCreated {
-			resp.Body.Close()
+			if cerr := resp.Body.Close(); cerr != nil {
+				log.Printf("Ошибка закрытия тела ответа в UploadAttachment: %v", cerr)
+			}
 			return true, nil
 		}
 		var bodyBuf bytes.Buffer
 		_, _ = bodyBuf.ReadFrom(resp.Body)
-		resp.Body.Close()
+		if cerr := resp.Body.Close(); cerr != nil {
+			log.Printf("Ошибка закрытия тела ответа в UploadAttachment (error path): %v", cerr)
+		}
 		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
 			return false, fmt.Errorf("неверный код ответа (повторяем): %d, body: %s", resp.StatusCode, bodyBuf.String())
 		}
@@ -381,7 +399,9 @@ func (c *Client) AddComment(taskID int64, comment *models.Comment) error {
 		}
 		var bodyBuf bytes.Buffer
 		_, _ = bodyBuf.ReadFrom(resp.Body)
-		resp.Body.Close()
+		if cerr := resp.Body.Close(); cerr != nil {
+			log.Printf("Ошибка закрытия тела ответа в AddComment: %v", cerr)
+		}
 		if resp.StatusCode == http.StatusCreated {
 			return true, nil
 		}

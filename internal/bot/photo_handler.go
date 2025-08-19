@@ -34,7 +34,12 @@ func (b *Bot) handlePhoto(c telebot.Context) error {
 			log.Printf("Ошибка создания временного файла: %v", err)
 			return c.Send("Ошибка при обработке фотографии.")
 		}
-		defer os.Remove(tmpFile.Name())
+		tmpName := tmpFile.Name()
+		defer func() {
+			if err := os.Remove(tmpName); err != nil {
+				log.Printf("Ошибка удаления временного файла %s: %v", tmpName, err)
+			}
+		}()
 
 		// Скачиваем файл
 		err = b.bot.Download(&photo.File, tmpFile.Name())
@@ -96,7 +101,10 @@ func (b *Bot) handlePhoto(c telebot.Context) error {
 		b.startTaskVerification(*task, *user, caption, true, fileData)
 
 		delete(b.taskCreationStates, c.Sender().ID)
-		return c.Send("Задача с фотографией отправлена на создание. Вы получите уведомление после её успешного создания.", mainMenu)
+		if err := c.Send("Задача с фотографией отправлена на создание. Вы получите уведомление после её успешного создания.", mainMenu); err != nil {
+			log.Printf("Ошибка отправки пользователю подтверждения отправки задачи: %v", err)
+		}
+		return nil
 	}
 
 	// Проверяем, находится ли пользователь в процессе комментирования задачи
@@ -113,7 +121,12 @@ func (b *Bot) handlePhoto(c telebot.Context) error {
 			log.Printf("Ошибка создания временного файла: %v", err)
 			return c.Send("Ошибка при обработке фотографии.")
 		}
-		defer os.Remove(tmpFile.Name())
+		tmpName := tmpFile.Name()
+		defer func() {
+			if err := os.Remove(tmpName); err != nil {
+				log.Printf("Ошибка удаления временного файла %s: %v", tmpName, err)
+			}
+		}()
 
 		// Скачиваем файл
 		err = b.bot.Download(&photo.File, tmpFile.Name())
@@ -140,7 +153,10 @@ func (b *Bot) handlePhoto(c telebot.Context) error {
 		// Загружаем файл в Yougile
 		if err := b.yougileClient.UploadAttachment(taskID, attachment, fileData); err != nil {
 			log.Printf("Ошибка загрузки файла в Yougile: %v", err)
-			return c.Send("Ошибка при сохранении фотографии.")
+			if err2 := c.Send("Ошибка при сохранении фотографии."); err2 != nil {
+				log.Printf("Ошибка отправки сообщения об ошибке пользователю: %v", err2)
+			}
+			return nil
 		}
 
 		// Создаем комментарий с вложением
@@ -161,12 +177,21 @@ func (b *Bot) handlePhoto(c telebot.Context) error {
 		// Добавляем комментарий к задаче
 		if err := b.yougileClient.AddComment(taskID, comment); err != nil {
 			log.Printf("Ошибка добавления комментария: %v", err)
-			return c.Send("Ошибка при добавлении комментария с фотографией.")
+			if err2 := c.Send("Ошибка при добавлении комментария с фотографией."); err2 != nil {
+				log.Printf("Ошибка отправки сообщения об ошибке пользователю: %v", err2)
+			}
+			return nil
 		}
 
 		delete(b.commentStates, c.Sender().ID)
-		return c.Send("Фотография успешно добавлена к задаче.", mainMenu)
+		if err := c.Send("Фотография успешно добавлена к задаче.", mainMenu); err != nil {
+			log.Printf("Ошибка отправки подтверждения пользователю: %v", err)
+		}
+		return nil
 	}
 
-	return c.Send("Пожалуйста, сначала начните создание новой задачи или выберите задачу для комментирования.", mainMenu)
+	if err := c.Send("Пожалуйста, сначала начните создание новой задачи или выберите задачу для комментирования.", mainMenu); err != nil {
+		log.Printf("Ошибка отправки подсказки пользователю: %v", err)
+	}
+	return nil
 }

@@ -11,9 +11,17 @@ import (
 
 func TestStorageSaveLoadTasks(t *testing.T) {
 	dir := "data/test_storage"
-	_ = os.RemoveAll(dir)
-	_ = os.MkdirAll(dir, 0755)
-	defer os.RemoveAll(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("Ошибка очистки тестовой директории: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("Ошибка создания тестовой директории: %v", err)
+	}
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Logf("Ошибка удаления тестовой директории при завершении: %v", err)
+		}
+	}()
 
 	known := dir + "/known.json"
 	chats := dir + "/chats.json"
