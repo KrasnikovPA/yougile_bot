@@ -1,3 +1,4 @@
+// Package models содержит определения структур данных проекта, включая шаблоны задач.
 package models
 
 import "time"

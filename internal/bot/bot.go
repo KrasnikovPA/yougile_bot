@@ -1,3 +1,4 @@
+// Package bot содержит реализацию Telegram-бота и обработчиков команд.
 package bot
 
 import (

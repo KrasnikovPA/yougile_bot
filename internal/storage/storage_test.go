@@ -1,3 +1,4 @@
+// Package storage содержит тесты для файлового хранилища приложения.
 package storage
 
 import (

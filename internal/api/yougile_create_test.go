@@ -1,3 +1,4 @@
+// Package api содержит тесты и вспомогательные функции для клиента Yougile API.
 package api
 
 import (

@@ -1,3 +1,4 @@
+// Package bot содержит обработчики задач и проверки валидации.
 package bot
 
 import (

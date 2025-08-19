@@ -1,3 +1,4 @@
+// Package storage реализует файл-ориентированное хранилище данных приложения.
 package storage
 
 import (

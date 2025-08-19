@@ -1,3 +1,4 @@
+// Package storage содержит методы управления пользователями в файлом хранилище.
 package storage
 
 import "yougile_bot4/internal/models"

@@ -1,3 +1,4 @@
+// Package bot содержит управление пользователями и роли.
 package bot
 
 import (

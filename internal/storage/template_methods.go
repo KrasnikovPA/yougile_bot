@@ -1,3 +1,4 @@
+// Package storage содержит методы для работы с шаблонами задач в хранилище.
 package storage
 
 import (

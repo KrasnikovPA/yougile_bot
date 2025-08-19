@@ -1,3 +1,4 @@
+// Package bot содержит обработчики для FAQ и утилиты бота.
 package bot
 
 import (
