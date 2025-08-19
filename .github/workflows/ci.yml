@@ -42,10 +42,47 @@ jobs:
         run: go vet ./...
 
       - name: Run golangci-lint
+        id: golangci
         uses: golangci/golangci-lint-action@v4
         with:
           version: v1.59.0
           args: run ./...
+        continue-on-error: true
+
+      - name: Add lint-failed label and comment on PR
+        if: ${{ steps.golangci.outcome == 'failure' && github.event_name == 'pull_request' }}
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) return;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            // Add label (will create if it doesn't exist)
+            try {
+              await github.issues.addLabels({ owner, repo, issue_number: pr.number, labels: ['lint-failed'] });
+            } catch (e) {
+              console.warn(`Failed to add label: ${e}`);
+            }
+            // Post a comment with link to workflow run
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const body = `golangci-lint обнаружил проблемы при проверке кода. Пожалуйста, исправьте замечания и запушьте изменения. Подробности: ${runUrl}`;
+            await github.issues.createComment({ owner, repo, issue_number: pr.number, body });
+
+      - name: Remove lint-failed label if lint passed
+        if: ${{ steps.golangci.outcome == 'success' && github.event_name == 'pull_request' }}
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) return;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            try {
+              await github.issues.removeLabel({ owner, repo, issue_number: pr.number, name: 'lint-failed' });
+            } catch (e) {
+              // ignore if label missing
+            }
 
       - name: Test
         run: go test ./... -v
