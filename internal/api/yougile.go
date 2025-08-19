@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
+	"math/rand"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -27,6 +29,40 @@ type TaskCache struct {
 	Expiration time.Duration
 }
 
+// retryOperation выполняет операцию с retry/backoff.
+// Функция op должна возвращать (done, err) где done=true означает, что операция завершена (успех или не‑повторяемая ошибка).
+func (c *Client) retryOperation(op func() (bool, error)) error {
+	start := time.Now()
+	var lastErr error
+	for attempt := 0; attempt < c.retryCount; attempt++ {
+		done, err := op()
+		if err == nil && done {
+			return nil
+		}
+		if err != nil && done {
+			// non-retryable error
+			return err
+		}
+		if err != nil {
+			lastErr = err
+		}
+
+		if c.maxRetryElapsed > 0 && time.Since(start) > c.maxRetryElapsed {
+			lastErr = fmt.Errorf("превышено максимальное время повторов: %v", c.maxRetryElapsed)
+			break
+		}
+
+		backoff := c.retryWait * (1 << attempt)
+		jitter := time.Duration(rand.Int63n(int64(c.retryWait)))
+		time.Sleep(backoff + jitter)
+	}
+	if lastErr != nil {
+		log.Printf("yougile client: operation failed after retries: %v", lastErr)
+		return lastErr
+	}
+	return fmt.Errorf("операция не удалась после попыток")
+}
+
 // Client представляет клиент для работы с API Yougile
 type Client struct {
 	token      string
@@ -36,6 +72,12 @@ type Client struct {
 	mu         sync.RWMutex
 	metrics    *metrics.Metrics
 	lastCheck  time.Time
+	baseURL    string
+	// retry policy for GET requests
+	retryCount int
+	retryWait  time.Duration
+	// max total time to spend retrying
+	maxRetryElapsed time.Duration
 }
 
 // NewClient создает новый клиент API
@@ -49,16 +91,37 @@ func NewClient(token, boardID string, timeout time.Duration, m *metrics.Metrics)
 		cache: &TaskCache{
 			Expiration: 5 * time.Minute,
 		},
-		metrics: m,
+		metrics:         m,
+		baseURL:         "https://yougile.com",
+		retryCount:      3,
+		retryWait:       500 * time.Millisecond,
+		maxRetryElapsed: 10 * time.Second,
+	}
+}
+
+// SetRetryPolicy задаёт политику повтора для клиента
+func (c *Client) SetRetryPolicy(count int, wait, maxElapsed time.Duration) {
+	if count > 0 {
+		c.retryCount = count
+	}
+	if wait > 0 {
+		c.retryWait = wait
+	}
+	if maxElapsed > 0 {
+		c.maxRetryElapsed = maxElapsed
 	}
 }
 
 // GetTasks получает список задач с доски
 func (c *Client) GetTasks(limit int) ([]models.Task, error) {
 	start := time.Now()
-	c.metrics.IncAPIRequests()
+	if c.metrics != nil {
+		c.metrics.IncAPIRequests()
+	}
 	defer func() {
-		c.metrics.UpdateLatency(time.Since(start))
+		if c.metrics != nil {
+			c.metrics.UpdateLatency(time.Since(start))
+		}
 	}()
 
 	c.mu.RLock()
@@ -70,24 +133,52 @@ func (c *Client) GetTasks(limit int) ([]models.Task, error) {
 	}
 	c.mu.RUnlock()
 
-	url := fmt.Sprintf("https://yougile.com/api-v2/board/%s/tasks?limit=%d", c.boardID, limit)
+	url := fmt.Sprintf("%s/api-v2/board/%s/tasks?limit=%d", c.baseURL, c.boardID, limit)
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка создания запроса: %w", err)
+	// perform GET with retries/backoff for transient errors
+	var resp *http.Response
+	var err error
+	for attempt := 0; attempt < c.retryCount; attempt++ {
+		req, rerr := http.NewRequest("GET", url, nil)
+		if rerr != nil {
+			err = fmt.Errorf("ошибка создания запроса: %w", rerr)
+			break
+		}
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+
+		resp, err = c.httpClient.Do(req)
+		if err == nil && resp != nil && resp.StatusCode == http.StatusOK {
+			break
+		}
+
+		// Close body if present and decide whether to retry
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+
+		// consider retry on network error or 5xx or 429
+		if err == nil {
+			// err == nil but bad status
+			if resp != nil && (resp.StatusCode >= 500 || resp.StatusCode == 429) {
+				// retry
+			} else {
+				// non-retriable status
+				return nil, fmt.Errorf("неверный код ответа: %d", resp.StatusCode)
+			}
+		}
+
+		// sleep with exponential backoff + jitter
+		backoff := c.retryWait * (1 << attempt)
+		jitter := time.Duration(rand.Int63n(int64(c.retryWait)))
+		time.Sleep(backoff + jitter)
 	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
-
-	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка выполнения запроса: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("неверный код ответа: %d", resp.StatusCode)
+	if resp == nil {
+		return nil, fmt.Errorf("ошибка выполнения запроса: пустой ответ")
 	}
+	defer resp.Body.Close()
 
 	var result struct {
 		Data []models.Task `json:"data"`
@@ -109,146 +200,194 @@ func (c *Client) GetTasks(limit int) ([]models.Task, error) {
 
 // CreateTask создает новую задачу
 func (c *Client) CreateTask(task *models.Task) error {
-	url := fmt.Sprintf("https://yougile.com/api-v2/board/%s/tasks", c.boardID)
-
+	url := fmt.Sprintf("%s/api-v2/board/%s/tasks", c.baseURL, c.boardID)
 	data, err := json.Marshal(task)
 	if err != nil {
 		return fmt.Errorf("ошибка сериализации задачи: %w", err)
 	}
+	// use retry helper
+	err = c.retryOperation(func() (bool, error) {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(data))
+		if err != nil {
+			return true, fmt.Errorf("ошибка создания запроса: %w", err)
+		}
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+		req.Header.Set("Content-Type", "application/json")
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("ошибка создания запроса: %w", err)
-	}
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			// network error -> retry
+			return false, fmt.Errorf("ошибка выполнения запроса: %w", err)
+		}
+		if resp == nil {
+			return false, fmt.Errorf("пустой ответ от сервера")
+		}
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
-	req.Header.Set("Content-Type", "application/json")
+		if resp.StatusCode == http.StatusCreated {
+			var result struct {
+				Data struct {
+					ID int64 `json:"id"`
+				} `json:"data"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				if c.metrics != nil {
+					c.metrics.IncAPIErrors()
+				}
+				resp.Body.Close()
+				return true, nil // treat as success
+			}
+			if result.Data.ID != 0 {
+				task.ID = result.Data.ID
+			}
+			resp.Body.Close()
+			return true, nil
+		}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("ошибка выполнения запроса: %w", err)
-	}
-	defer resp.Body.Close()
+		var bodyBuf bytes.Buffer
+		_, _ = bodyBuf.ReadFrom(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
+			return false, fmt.Errorf("неверный код ответа (повторяем): %d, body: %s", resp.StatusCode, bodyBuf.String())
+		}
+		return true, fmt.Errorf("неверный код ответа: %d, body: %s", resp.StatusCode, bodyBuf.String())
+	})
 
-	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("неверный код ответа: %d", resp.StatusCode)
-	}
-
-	return nil
+	return err
 }
 
 // UpdateTask обновляет существующую задачу
 func (c *Client) UpdateTask(task *models.Task) error {
-	url := fmt.Sprintf("https://yougile.com/api-v2/board/%s/tasks/%d", c.boardID, task.ID)
-
+	url := fmt.Sprintf("%s/api-v2/board/%s/tasks/%d", c.baseURL, c.boardID, task.ID)
 	data, err := json.Marshal(task)
 	if err != nil {
 		return fmt.Errorf("ошибка сериализации задачи: %w", err)
 	}
 
-	req, err := http.NewRequest("PUT", url, bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("ошибка создания запроса: %w", err)
-	}
+	// use retry helper for update
+	return c.retryOperation(func() (bool, error) {
+		req, err := http.NewRequest("PUT", url, bytes.NewReader(data))
+		if err != nil {
+			return true, fmt.Errorf("ошибка создания запроса: %w", err)
+		}
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+		req.Header.Set("Content-Type", "application/json")
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("ошибка выполнения запроса: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("неверный код ответа: %d", resp.StatusCode)
-	}
-
-	return nil
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return false, fmt.Errorf("ошибка выполнения запроса: %w", err)
+		}
+		if resp.Body != nil {
+			var bodyBuf bytes.Buffer
+			_, _ = bodyBuf.ReadFrom(resp.Body)
+			resp.Body.Close()
+		}
+		if resp.StatusCode == http.StatusOK {
+			return true, nil
+		}
+		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
+			return false, fmt.Errorf("неверный код ответа (повторяем): %d", resp.StatusCode)
+		}
+		return true, fmt.Errorf("неверный код ответа: %d", resp.StatusCode)
+	})
 }
 
 // UploadAttachment загружает вложение на сервер
 func (c *Client) UploadAttachment(taskID int64, attachment *models.Attachment, data []byte) error {
-	url := fmt.Sprintf("https://yougile.com/api-v2/board/%s/tasks/%d/attachments", c.boardID, taskID)
+	url := fmt.Sprintf("%s/api-v2/board/%s/tasks/%d/attachments", c.baseURL, c.boardID, taskID)
+	return c.retryOperation(func() (bool, error) {
+		// build multipart body per attempt (buffer is consumed by request)
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
 
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
+		// Добавляем метаданные
+		metaHeader := textproto.MIMEHeader{}
+		metaHeader.Set("Content-Disposition", `form-data; name="metadata"`)
+		metaHeader.Set("Content-Type", "application/json")
+		metaPart, err := writer.CreatePart(metaHeader)
+		if err != nil {
+			return true, fmt.Errorf("ошибка создания части metadata: %w", err)
+		}
+		if err := json.NewEncoder(metaPart).Encode(attachment); err != nil {
+			return true, fmt.Errorf("ошибка кодирования metadata: %w", err)
+		}
 
-	// Добавляем метаданные
-	metaHeader := textproto.MIMEHeader{}
-	metaHeader.Set("Content-Disposition", `form-data; name="metadata"`)
-	metaHeader.Set("Content-Type", "application/json")
-	metaPart, err := writer.CreatePart(metaHeader)
-	if err != nil {
-		return fmt.Errorf("ошибка создания части metadata: %w", err)
-	}
-	if err := json.NewEncoder(metaPart).Encode(attachment); err != nil {
-		return fmt.Errorf("ошибка кодирования metadata: %w", err)
-	}
+		// Добавляем файл
+		fileHeader := textproto.MIMEHeader{}
+		fileHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, attachment.ID))
+		fileHeader.Set("Content-Type", "application/octet-stream")
+		filePart, err := writer.CreatePart(fileHeader)
+		if err != nil {
+			return true, fmt.Errorf("ошибка создания части file: %w", err)
+		}
+		if _, err := filePart.Write(data); err != nil {
+			return true, fmt.Errorf("ошибка записи файла: %w", err)
+		}
 
-	// Добавляем файл
-	fileHeader := textproto.MIMEHeader{}
-	fileHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, attachment.ID))
-	fileHeader.Set("Content-Type", "application/octet-stream")
-	filePart, err := writer.CreatePart(fileHeader)
-	if err != nil {
-		return fmt.Errorf("ошибка создания части file: %w", err)
-	}
-	if _, err := filePart.Write(data); err != nil {
-		return fmt.Errorf("ошибка записи файла: %w", err)
-	}
+		if err := writer.Close(); err != nil {
+			return true, fmt.Errorf("ошибка закрытия writer: %w", err)
+		}
 
-	if err := writer.Close(); err != nil {
-		return fmt.Errorf("ошибка закрытия writer: %w", err)
-	}
+		req, err := http.NewRequest("POST", url, body)
+		if err != nil {
+			return true, fmt.Errorf("ошибка создания запроса: %w", err)
+		}
 
-	req, err := http.NewRequest("POST", url, body)
-	if err != nil {
-		return fmt.Errorf("ошибка создания запроса: %w", err)
-	}
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+		req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("ошибка выполнения запроса: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("неверный код ответа: %d", resp.StatusCode)
-	}
-
-	return nil
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return false, fmt.Errorf("ошибка выполнения запроса: %w", err)
+		}
+		if resp == nil {
+			return false, fmt.Errorf("пустой ответ от сервера")
+		}
+		if resp.StatusCode == http.StatusCreated {
+			resp.Body.Close()
+			return true, nil
+		}
+		var bodyBuf bytes.Buffer
+		_, _ = bodyBuf.ReadFrom(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
+			return false, fmt.Errorf("неверный код ответа (повторяем): %d, body: %s", resp.StatusCode, bodyBuf.String())
+		}
+		return true, fmt.Errorf("неверный код ответа: %d, body: %s", resp.StatusCode, bodyBuf.String())
+	})
 }
 
 // AddComment добавляет комментарий к задаче
 func (c *Client) AddComment(taskID int64, comment *models.Comment) error {
-	url := fmt.Sprintf("https://yougile.com/api-v2/board/%s/tasks/%d/comments", c.boardID, taskID)
-
+	url := fmt.Sprintf("%s/api-v2/board/%s/tasks/%d/comments", c.baseURL, c.boardID, taskID)
 	data, err := json.Marshal(comment)
 	if err != nil {
 		return fmt.Errorf("ошибка сериализации комментария: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("ошибка создания запроса: %w", err)
-	}
+	return c.retryOperation(func() (bool, error) {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(data))
+		if err != nil {
+			return true, fmt.Errorf("ошибка создания запроса: %w", err)
+		}
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+		req.Header.Set("Content-Type", "application/json")
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("ошибка выполнения запроса: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("неверный код ответа: %d", resp.StatusCode)
-	}
-
-	return nil
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return false, fmt.Errorf("ошибка выполнения запроса: %w", err)
+		}
+		if resp == nil {
+			return false, fmt.Errorf("пустой ответ от сервера")
+		}
+		var bodyBuf bytes.Buffer
+		_, _ = bodyBuf.ReadFrom(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusCreated {
+			return true, nil
+		}
+		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
+			return false, fmt.Errorf("неверный код ответа (повторяем): %d", resp.StatusCode)
+		}
+		return true, fmt.Errorf("неверный код ответа: %d", resp.StatusCode)
+	})
 }

@@ -34,7 +34,7 @@ type Storage struct {
 }
 
 // NewStorage создает новое хранилище
-func NewStorage(knownTasksFile, chatIDsFile, usersFile, tasksFile, templatesFile string) (*Storage, error) {
+func NewStorage(knownTasksFile, chatIDsFile, usersFile, tasksFile, templatesFile string, m *metrics.Metrics) (*Storage, error) {
 	s := &Storage{
 		knownTasks:      make(map[string]bool),
 		chatIDs:         make([]int64, 0),
@@ -46,6 +46,7 @@ func NewStorage(knownTasksFile, chatIDsFile, usersFile, tasksFile, templatesFile
 		chatIDsFile:     chatIDsFile,
 		usersFile:       usersFile,
 		templatesFile:   templatesFile,
+		metrics:         m,
 	}
 
 	if err := s.loadData(); err != nil {
@@ -66,10 +67,21 @@ func (s *Storage) loadData() error {
 	if err := s.loadJSON(s.usersFile, &s.users); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	// Восстановим индекс usersByUsername
+	s.usersByUsername = make(map[string]int64, len(s.users))
+	for id, u := range s.users {
+		if u != nil && u.Username != "" {
+			s.usersByUsername[u.Username] = id
+		}
+	}
 	if err := s.LoadFAQ(); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	if err := s.LoadTaskTemplates(); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	// Загрузим задачи из файла tasksFile
+	if err := s.loadJSON(s.tasksFile, &s.tasks); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
@@ -90,25 +102,44 @@ func (s *Storage) SaveData() error {
 	start := time.Now()
 
 	if err := s.saveJSON(s.knownTasksFile, s.knownTasks); err != nil {
-		s.metrics.IncAPIErrors()
+		if s.metrics != nil {
+			s.metrics.IncAPIErrors()
+		}
 		return err
 	}
 	if err := s.saveJSON(s.chatIDsFile, s.chatIDs); err != nil {
-		s.metrics.IncAPIErrors()
+		if s.metrics != nil {
+			s.metrics.IncAPIErrors()
+		}
 		return err
 	}
 	if err := s.saveJSON(s.usersFile, s.users); err != nil {
-		s.metrics.IncAPIErrors()
+		if s.metrics != nil {
+			s.metrics.IncAPIErrors()
+		}
 		return err
 	}
 
-	if err := s.SaveTaskTemplates(); err != nil {
-		s.metrics.IncAPIErrors()
+	// Сохраним задачи
+	if err := s.saveJSON(s.tasksFile, s.tasks); err != nil {
+		if s.metrics != nil {
+			s.metrics.IncAPIErrors()
+		}
+		return err
+	}
+
+	// Сохраняем шаблоны напрямую (чтобы избежать повторной блокировки s.mu внутри SaveTaskTemplates)
+	if err := s.saveJSON(s.templatesFile, s.taskTemplates); err != nil {
+		if s.metrics != nil {
+			s.metrics.IncAPIErrors()
+		}
 		return err
 	}
 
 	s.isDirty = false
-	s.metrics.UpdateLatency(time.Since(start))
+	if s.metrics != nil {
+		s.metrics.UpdateLatency(time.Since(start))
+	}
 	return nil
 }
 
@@ -133,7 +164,12 @@ func (s *Storage) saveJSON(filename string, v interface{}) error {
 		return err
 	}
 
-	return os.WriteFile(filename, data, 0644)
+	// Записываем в временный файл и затем переименовываем — атомарная запись
+	tmp := filename + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filename)
 }
 
 // AddKnownTask добавляет задачу в список известных
@@ -141,6 +177,7 @@ func (s *Storage) AddKnownTask(taskID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.knownTasks[fmt.Sprintf("%d", taskID)] = true
+	s.isDirty = true
 }
 
 // IsKnownTask проверяет, известна ли задача
@@ -160,6 +197,7 @@ func (s *Storage) AddChatID(chatID int64) {
 		}
 	}
 	s.chatIDs = append(s.chatIDs, chatID)
+	s.isDirty = true
 }
 
 // GetChatIDs возвращает список ID чатов
@@ -186,6 +224,7 @@ func (s *Storage) AddUser(user *models.User) {
 	if user.Username != "" {
 		s.usersByUsername[user.Username] = user.TelegramID
 	}
+	s.isDirty = true
 }
 
 // GetUser возвращает пользователя по ID
@@ -225,6 +264,7 @@ func (s *Storage) UpdateUser(user *models.User) {
 	if user.Username != "" {
 		s.usersByUsername[user.Username] = user.TelegramID
 	}
+	s.isDirty = true
 }
 
 // GetUsers возвращает всех пользователей
@@ -243,6 +283,7 @@ func (s *Storage) AddTask(task *models.Task) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tasks = append(s.tasks, task)
+	s.isDirty = true
 }
 
 // GetTasks возвращает все задачи
@@ -264,4 +305,5 @@ func (s *Storage) UpdateTask(task *models.Task) {
 			break
 		}
 	}
+	s.isDirty = true
 }

@@ -3,6 +3,7 @@ package storage
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"yougile_bot4/internal/models"
 )
 
@@ -41,5 +42,14 @@ func (s *Storage) SaveTaskTemplates() error {
 		return err
 	}
 
-	return os.WriteFile(s.templatesFile, data, 0644)
+	dir := filepath.Dir(s.templatesFile)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	tmp := s.templatesFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.templatesFile)
 }

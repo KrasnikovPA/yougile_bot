@@ -81,6 +81,10 @@ func main() {
 		RegTimeout:      24 * time.Hour,   // Таймаут регистрации
 		HTTPTimeout:     30 * time.Second, // Таймаут HTTP запросов
 		GracefulTimeout: 30 * time.Second, // Таймаут graceful shutdown
+		// retry defaults (можно переопределить через переменные окружения)
+		RetryCount:      3,
+		RetryWait:       500 * time.Millisecond,
+		MaxRetryElapsed: 10 * time.Second,
 	}
 
 	// Настройка логирования
@@ -97,6 +101,7 @@ func main() {
 		config.UsersFile,
 		config.TasksFile,
 		config.TemplatesFile,
+		metrics,
 	)
 	if err != nil {
 		log.Fatalf("Ошибка инициализации хранилища: %v", err)
@@ -109,6 +114,25 @@ func main() {
 		config.HTTPTimeout,
 		metrics,
 	)
+
+	// Override retry policy from environment if provided
+	if rc := os.Getenv("YOUGILE_RETRY_COUNT"); rc != "" {
+		if v, err := strconv.Atoi(rc); err == nil && v > 0 {
+			config.RetryCount = v
+		}
+	}
+	if rw := os.Getenv("YOUGILE_RETRY_WAIT_MS"); rw != "" {
+		if v, err := strconv.Atoi(rw); err == nil && v > 0 {
+			config.RetryWait = time.Duration(v) * time.Millisecond
+		}
+	}
+	if rm := os.Getenv("YOUGILE_MAX_RETRY_ELAPSED_SEC"); rm != "" {
+		if v, err := strconv.Atoi(rm); err == nil && v > 0 {
+			config.MaxRetryElapsed = time.Duration(v) * time.Second
+		}
+	}
+
+	yougileClient.SetRetryPolicy(config.RetryCount, config.RetryWait, config.MaxRetryElapsed)
 
 	// Создание и запуск бота
 	boardID, err := strconv.ParseInt(config.YougileBoard, 10, 64)

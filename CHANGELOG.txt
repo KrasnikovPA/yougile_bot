@@ -1,0 +1,12 @@
+CHANGELOG
+
+Unreleased
+- Full audit and fixes across repository
+- Added retry/backoff with jitter for Yougile API calls (GET/POST/PUT)
+- Centralized retry logic in client (`retryOperation`)
+- Added max retry elapsed and ability to configure retry policy
+- Fixed storage atomic writes and template saving to avoid deadlocks
+- Added unit tests for API client and storage (CreateTask, UploadAttachment, UpdateTask, AddComment)
+- Added CI workflow (GitHub Actions) with Go matrix and golangci-lint
+- Added README badge and documented new environment variables
+- Various nil-checks and safety improvements

@@ -122,4 +122,8 @@ type Config struct {
 	RegTimeout      time.Duration
 	HTTPTimeout     time.Duration
 	GracefulTimeout time.Duration
+	// Retry policy for Yougile client
+	RetryCount      int
+	RetryWait       time.Duration
+	MaxRetryElapsed time.Duration
 }
