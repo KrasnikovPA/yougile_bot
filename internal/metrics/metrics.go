@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-// Metrics хранит метрики работы приложения
+// Metrics хранит метрики и счётчики, собираемые приложением.
+// Поля изменяются атомарно или через mutex в зависимости от типа.
 type Metrics struct {
 	ActiveUsers    int64
 	TasksCreated   int64
@@ -18,7 +19,7 @@ type Metrics struct {
 	mu             sync.RWMutex
 }
 
-// NewMetrics создает новый экземпляр метрик
+// NewMetrics создает и возвращает новый объект Metrics.
 func NewMetrics() *Metrics {
 	return &Metrics{}
 }

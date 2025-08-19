@@ -36,14 +36,16 @@ var (
 
 // Используем TaskCreationState из models
 
-// RegistrationState хранит состояние процесса регистрации
+// RegistrationState хранит состояние процесса регистрации пользователя в боте.
+// Содержит временную информацию и текущий этап заполнения данных.
 type RegistrationState struct {
 	StartTime time.Time
 	User      *models.User
 	Stage     string // "waiting_firstname", "waiting_lastname", "waiting_building", "waiting_room"
 }
 
-// Bot представляет Telegram бота
+// Bot представляет Telegram-бота и его внутреннее состояние.
+// Оборачивает telebot.Bot и содержит ссылки на хранилище, API-клиент и метрики.
 type Bot struct {
 	bot                *telebot.Bot
 	storage            *storage.Storage
@@ -63,7 +65,7 @@ type Bot struct {
 	adminUserStates    map[int64]*AdminUserState           // состояния управления пользователями
 }
 
-// NewBot создает нового бота
+// NewBot создает и настраивает экземпляр Bot, регистрирует обработчики команд.
 func NewBot(token string, storage *storage.Storage, yougileToken string, boardID int64, regTimeout time.Duration, minMsgLen int, metrics *metrics.Metrics) (*Bot, error) {
 	b, err := telebot.NewBot(telebot.Settings{
 		Token:  token,
@@ -438,7 +440,7 @@ func (b *Bot) handleMessage(c telebot.Context) error {
 	return nil
 }
 
-// Start запускает бота
+// Start запускает обработчики бота и фоновую обработку уведомлений.
 func (b *Bot) Start() {
 	// Запускаем обработку уведомлений
 	go func() {
@@ -450,13 +452,13 @@ func (b *Bot) Start() {
 	go b.bot.Start()
 }
 
-// Stop останавливает бота
+// Stop корректно завершает работу бота и закрывает канал уведомлений.
 func (b *Bot) Stop() {
 	close(b.notifications)
 	b.bot.Stop()
 }
 
-// SendNotification отправляет уведомление всем пользователям
+// SendNotification отправляет указанное сообщение во все чаты, зарегистрированные в хранилище.
 func (b *Bot) SendNotification(msg string) {
 	for _, chatID := range b.storage.GetChatIDs() {
 		if _, err := b.bot.Send(&telebot.Chat{ID: chatID}, msg); err != nil {
@@ -465,7 +467,7 @@ func (b *Bot) SendNotification(msg string) {
 	}
 }
 
-// showPendingRequests показывает список запросов на подтверждение
+// showPendingRequests формирует и отправляет список ожидающих подтверждения запросов администратора.
 func (b *Bot) showPendingRequests(c telebot.Context) error {
 	var menu *telebot.ReplyMarkup
 	var buttons []telebot.Btn

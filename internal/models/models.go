@@ -4,7 +4,8 @@ package models
 
 import "time"
 
-// TaskStatus представляет статус задачи
+// TaskStatus представляет статус задачи.
+// Возможные значения определены константами ниже (TaskStatusNew, TaskStatusInWork и т.д.).
 type TaskStatus string
 
 const (
@@ -18,7 +19,7 @@ const (
 	TaskStatusCancelled TaskStatus = "cancelled"
 )
 
-// AttachmentType представляет тип вложения
+// AttachmentType представляет тип вложения (изображение, файл и т.д.).
 type AttachmentType string
 
 const (
@@ -28,7 +29,8 @@ const (
 	AttachmentTypeFile AttachmentType = "file"
 )
 
-// Attachment представляет вложение в комментарии или задаче
+// Attachment представляет вложение в комментарии или задаче.
+// Поля описывают метаданные вложения и ссылку на содержимое.
 type Attachment struct {
 	ID        string         `json:"id"`
 	Type      AttachmentType `json:"type"`
@@ -37,7 +39,8 @@ type Attachment struct {
 	FileID    string         `json:"file_id,omitempty"` // Telegram File ID
 }
 
-// Comment представляет комментарий к задаче
+// Comment представляет комментарий к задаче.
+// Содержит автора, текст и возможные вложения.
 type Comment struct {
 	ID          int64        `json:"id"`
 	TaskID      int64        `json:"task_id"`
@@ -48,7 +51,8 @@ type Comment struct {
 	UpdatedAt   time.Time    `json:"updated_at"`
 }
 
-// Task представляет задачу в системе Yougile
+// Task представляет задачу в системе Yougile.
+// Включает поля метаданных, статуса, оценок и комментариев.
 type Task struct {
 	ID          int64      `json:"id"`
 	BoardID     int64      `json:"board_id"`
@@ -69,7 +73,7 @@ type Task struct {
 	Attachments []string   `json:"attachments,omitempty"` // URLs вложений
 }
 
-// UserRole определяет роль пользователя
+// UserRole определяет роль пользователя в системе (админ или пользователь).
 type UserRole string
 
 const (
@@ -79,7 +83,7 @@ const (
 	RoleUser UserRole = "user"
 )
 
-// User представляет пользователя бота
+// User представляет пользователя бота и связанные с ним данные (телеграм, роль, адрес и т.д.).
 type User struct {
 	TelegramID      int64    `json:"telegram_id"`
 	Username        string   `json:"username"` // Username в Telegram
@@ -94,7 +98,7 @@ type User struct {
 	AddressChange   bool     `json:"address_change"` // Ожидает подтверждения изменения адреса
 }
 
-// PendingRequest представляет запрос на подтверждение
+// PendingRequest представляет запрос пользователя, требующий подтверждения администратора.
 type PendingRequest struct {
 	UserID          int64     `json:"user_id"`
 	Type            string    `json:"type"` // "registration" или "address_change"
@@ -103,16 +107,17 @@ type PendingRequest struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
-// FAQItem представляет элемент FAQ
+// FAQItem представляет элемент FAQ (вопрос-ответ).
 type FAQItem struct {
 	Question string `json:"question"`
 	Answer   string `json:"answer"`
 }
 
-// FAQData содержит все элементы FAQ
+// FAQData представляет набор элементов FAQ, индексированных по ключу.
 type FAQData map[string]FAQItem
 
-// Config содержит конфигурацию приложения
+// Config содержит конфигурацию приложения, получаемую из окружения.
+// Включает параметры Yougile, Telegram и файлы хранения.
 type Config struct {
 	YougileToken    string
 	YougileBoard    string

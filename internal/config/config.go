@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Config представляет конфигурацию приложения
+// Config представляет конфигурацию приложения, загружаемую из YAML или окружения.
 type Config struct {
 	API struct {
 		Yougile struct {
@@ -42,7 +42,7 @@ type Config struct {
 	} `yaml:"bot"`
 }
 
-// NewConfig создает новую конфигурацию с значениями по умолчанию
+// NewConfig создает и возвращает конфигурацию с безопасными значениями по умолчанию.
 func NewConfig() *Config {
 	cfg := &Config{}
 
@@ -71,7 +71,7 @@ func NewConfig() *Config {
 	return cfg
 }
 
-// Validate проверяет корректность конфигурации
+// Validate проверяет обязательные поля конфигурации и возвращает ошибку при отсутствии.
 func (c *Config) Validate() error {
 	if c.API.Yougile.Token == "" {
 		return fmt.Errorf("не указан токен Yougile")

@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-// RotateWriter реализует ротацию логов по размеру и времени
+// RotateWriter реализует ротацию логов по размеру и времени.
+// Используется как io.Writer для логирования с автоматическим архивированием.
 type RotateWriter struct {
 	filename    string
 	maxSize     int64
@@ -19,7 +20,8 @@ type RotateWriter struct {
 	created     time.Time
 }
 
-// NewRotateWriter создает новый Writer с ротацией
+// NewRotateWriter создает новый RotateWriter для указанного файла.
+// maxSize — максимальный размер файла перед ротацией, maxAge — максимальный возраст файла.
 func NewRotateWriter(filename string, maxSize int64, maxAge time.Duration) (*RotateWriter, error) {
 	w := &RotateWriter{
 		filename: filename,
@@ -32,7 +34,7 @@ func NewRotateWriter(filename string, maxSize int64, maxAge time.Duration) (*Rot
 	return w, nil
 }
 
-// Write реализует интерфейс io.Writer
+// Write записывает данные в файл и выполняет ротацию при необходимости.
 func (w *RotateWriter) Write(p []byte) (n int, err error) {
 	if w.file == nil {
 		if err := w.openFile(); err != nil {
@@ -52,7 +54,7 @@ func (w *RotateWriter) Write(p []byte) (n int, err error) {
 	return n, err
 }
 
-// Close закрывает текущий файл
+// Close закрывает текущий файл логов.
 func (w *RotateWriter) Close() error {
 	if w.file == nil {
 		return nil
@@ -122,7 +124,7 @@ func (w *RotateWriter) openFile() error {
 	return nil
 }
 
-// GetWriter возвращает io.Writer для логирования
+// GetWriter создает и возвращает реализующий io.Writer (RotateWriter) для логирования.
 func GetWriter(filename string, maxSize int64, maxAge time.Duration) (io.Writer, error) {
 	return NewRotateWriter(filename, maxSize, maxAge)
 }

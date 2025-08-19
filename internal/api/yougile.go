@@ -27,7 +27,7 @@ var (
 	ErrRateLimit = fmt.Errorf("rate limit exceeded")
 )
 
-// TaskCache представляет кэш задач
+// TaskCache представляет кэш задач, используемый клиентом для уменьшения количества запросов.
 type TaskCache struct {
 	Tasks      []models.Task
 	UpdatedAt  time.Time
@@ -68,7 +68,8 @@ func (c *Client) retryOperation(op func() (bool, error)) error {
 	return fmt.Errorf("операция не удалась после попыток")
 }
 
-// Client представляет клиент для работы с API Yougile
+// Client представляет HTTP-клиент для взаимодействия с Yougile API.
+// Он реализует retry/backoff и локальный кэш задач.
 type Client struct {
 	token      string
 	boardID    string
@@ -84,7 +85,8 @@ type Client struct {
 	maxRetryElapsed time.Duration
 }
 
-// NewClient создает новый клиент API
+// NewClient создает новый экземпляр Client.
+// token — токен доступа Yougile, boardID — идентификатор доски, timeout — HTTP timeout.
 func NewClient(token, boardID string, timeout time.Duration, m *metrics.Metrics) *Client {
 	return &Client{
 		token:   token,
@@ -103,7 +105,9 @@ func NewClient(token, boardID string, timeout time.Duration, m *metrics.Metrics)
 	}
 }
 
-// SetRetryPolicy задаёт политику повтора для клиента
+// SetRetryPolicy задаёт политику повторов для запросов клиента.
+// count — максимальное число попыток, wait — базовый интервал между повторами,
+// maxElapsed — максимальное суммарное время на повторы.
 func (c *Client) SetRetryPolicy(count int, wait, maxElapsed time.Duration) {
 	if count > 0 {
 		c.retryCount = count

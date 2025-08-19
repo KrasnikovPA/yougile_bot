@@ -13,7 +13,8 @@ import (
 	"yougile_bot4/internal/models"
 )
 
-// Storage представляет хранилище данных
+// Storage представляет файл-ориентированное хранилище данных приложения.
+// Используется для чтения/записи пользователей, задач, шаблонов и FAQ.
 type Storage struct {
 	knownTasks      map[string]bool
 	chatIDs         []int64
@@ -34,7 +35,8 @@ type Storage struct {
 	metrics *metrics.Metrics // Метрики хранилища
 }
 
-// NewStorage создает новое хранилище
+// NewStorage создает новое хранилище и загружает данные из указанных файлов.
+// knownTasksFile, chatIDsFile, usersFile, tasksFile, templatesFile — пути к JSON файлам.
 func NewStorage(knownTasksFile, chatIDsFile, usersFile, tasksFile, templatesFile string, m *metrics.Metrics) (*Storage, error) {
 	s := &Storage{
 		knownTasks:      make(map[string]bool),
@@ -88,7 +90,8 @@ func (s *Storage) loadData() error {
 	return nil
 }
 
-// SaveData сохраняет данные в файлы только если были изменения
+// SaveData сохраняет текущие данные в файлы, если есть изменения.
+// Осуществляет атомарную запись через временные файлы.
 func (s *Storage) SaveData() error {
 	s.mu.RLock()
 	if !s.isDirty {
@@ -173,7 +176,7 @@ func (s *Storage) saveJSON(filename string, v interface{}) error {
 	return os.Rename(tmp, filename)
 }
 
-// AddKnownTask добавляет задачу в список известных
+// AddKnownTask добавляет идентификатор задачи в набор известных задач.
 func (s *Storage) AddKnownTask(taskID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -181,14 +184,14 @@ func (s *Storage) AddKnownTask(taskID int64) {
 	s.isDirty = true
 }
 
-// IsKnownTask проверяет, известна ли задача
+// IsKnownTask возвращает true, если задача уже была увидена ранее.
 func (s *Storage) IsKnownTask(taskID int64) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.knownTasks[fmt.Sprintf("%d", taskID)]
 }
 
-// AddChatID добавляет ID чата в список
+// AddChatID добавляет идентификатор чата, в который будут отправляться уведомления.
 func (s *Storage) AddChatID(chatID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -201,7 +204,7 @@ func (s *Storage) AddChatID(chatID int64) {
 	s.isDirty = true
 }
 
-// GetChatIDs возвращает список ID чатов
+// GetChatIDs возвращает копию списка идентификаторов чатов.
 func (s *Storage) GetChatIDs() []int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -228,7 +231,7 @@ func (s *Storage) AddUser(user *models.User) {
 	s.isDirty = true
 }
 
-// GetUser возвращает пользователя по ID
+// GetUser возвращает пользователя по Telegram ID и флаг, найден ли он.
 func (s *Storage) GetUser(telegramID int64) (*models.User, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -236,7 +239,7 @@ func (s *Storage) GetUser(telegramID int64) (*models.User, bool) {
 	return user, ok
 }
 
-// GetAllUsers возвращает список всех пользователей
+// GetAllUsers возвращает срез всех пользователей, сохранённых в хранилище.
 func (s *Storage) GetAllUsers() []*models.User {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -248,7 +251,7 @@ func (s *Storage) GetAllUsers() []*models.User {
 	return users
 }
 
-// UpdateUser обновляет данные пользователя
+// UpdateUser обновляет или создает запись пользователя и поддерживает индекс username.
 func (s *Storage) UpdateUser(user *models.User) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -268,7 +271,7 @@ func (s *Storage) UpdateUser(user *models.User) {
 	s.isDirty = true
 }
 
-// GetUsers возвращает всех пользователей
+// GetUsers возвращает копию внутренней карты пользователей.
 func (s *Storage) GetUsers() map[int64]*models.User {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -279,7 +282,7 @@ func (s *Storage) GetUsers() map[int64]*models.User {
 	return result
 }
 
-// AddTask добавляет новую задачу
+// AddTask добавляет новую задачу в хранилище.
 func (s *Storage) AddTask(task *models.Task) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -287,7 +290,7 @@ func (s *Storage) AddTask(task *models.Task) {
 	s.isDirty = true
 }
 
-// GetTasks возвращает все задачи
+// GetTasks возвращает копию среза всех задач.
 func (s *Storage) GetTasks() []*models.Task {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -296,7 +299,7 @@ func (s *Storage) GetTasks() []*models.Task {
 	return result
 }
 
-// UpdateTask обновляет существующую задачу
+// UpdateTask обновляет существующую задачу по ID (заменяет запись).
 func (s *Storage) UpdateTask(task *models.Task) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
