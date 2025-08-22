@@ -136,7 +136,7 @@ func main() {
 	yougileClient.SetRetryPolicy(config.RetryCount, config.RetryWait, config.MaxRetryElapsed)
 
 	// Создание и запуск бота
-	boardID, err := strconv.ParseInt(config.YougileBoard, 10, 64)
+	boardID := config.YougileBoard
 	if err != nil {
 		log.Fatalf("Неверный формат ID доски: %v", err)
 	}

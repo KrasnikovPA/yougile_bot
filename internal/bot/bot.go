@@ -50,7 +50,7 @@ type Bot struct {
 	bot                *telebot.Bot
 	storage            *storage.Storage
 	yougileClient      *api.Client
-	boardID            int64
+	boardID            string
 	regTimeout         time.Duration
 	minMsgLen          int
 	notifications      chan string
@@ -66,7 +66,7 @@ type Bot struct {
 }
 
 // NewBot создает и настраивает экземпляр Bot, регистрирует обработчики команд.
-func NewBot(token string, storage *storage.Storage, yougileToken string, boardID int64, regTimeout time.Duration, minMsgLen int, metrics *metrics.Metrics) (*Bot, error) {
+func NewBot(token string, storage *storage.Storage, yougileToken string, boardID string, regTimeout time.Duration, minMsgLen int, metrics *metrics.Metrics) (*Bot, error) {
 	b, err := telebot.NewBot(telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -75,7 +75,7 @@ func NewBot(token string, storage *storage.Storage, yougileToken string, boardID
 		return nil, fmt.Errorf("ошибка создания бота: %w", err)
 	}
 
-	yougileClient := api.NewClient(yougileToken, strconv.FormatInt(boardID, 10), 30*time.Second, metrics)
+	yougileClient := api.NewClient(yougileToken, boardID, 30*time.Second, metrics)
 
 	bot := &Bot{
 		bot:                b,

@@ -20,3 +20,4 @@ logs/
 .vscode/
 *.swp
 *.swo
+\n# local env\n.env

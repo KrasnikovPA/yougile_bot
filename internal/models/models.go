@@ -55,7 +55,7 @@ type Comment struct {
 // Включает поля метаданных, статуса, оценок и комментариев.
 type Task struct {
 	ID          int64      `json:"id"`
-	BoardID     int64      `json:"board_id"`
+	BoardID     string     `json:"board_id"`
 	Title       string     `json:"title"`
 	Description string     `json:"description"`
 	Status      TaskStatus `json:"status"`
