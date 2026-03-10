@@ -72,7 +72,7 @@ func TestAddCommentRetries(t *testing.T) {
 	c.retryWait = 10 * time.Millisecond
 
 	comment := &models.Comment{Text: "hello"}
-	if err := c.AddComment(123, comment); err != nil {
+	if err := c.AddComment("123", comment); err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
 	if calls < 2 {

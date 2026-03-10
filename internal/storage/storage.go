@@ -26,11 +26,13 @@ type Storage struct {
 	mu              sync.RWMutex
 	isDirty         bool // Флаг изменения данных
 
-	knownTasksFile string
-	chatIDsFile    string
-	usersFile      string
-	tasksFile      string
-	templatesFile  string
+	knownTasksFile  string
+	chatIDsFile     string
+	usersFile       string
+	tasksFile       string
+	templatesFile   string
+	lastScanned     int
+	lastScannedFile string
 
 	metrics *metrics.Metrics // Метрики хранилища
 }
@@ -50,6 +52,7 @@ func NewStorage(knownTasksFile, chatIDsFile, usersFile, tasksFile, templatesFile
 		usersFile:       usersFile,
 		templatesFile:   templatesFile,
 		metrics:         m,
+		lastScannedFile: "data/scan_state.json",
 	}
 
 	if err := s.loadData(); err != nil {
@@ -86,6 +89,13 @@ func (s *Storage) loadData() error {
 	// Загрузим задачи из файла tasksFile
 	if err := s.loadJSON(s.tasksFile, &s.tasks); err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	// Load scan state if present
+	var scanState struct {
+		LastScanned int `json:"last_scanned"`
+	}
+	if err := s.loadJSON(s.lastScannedFile, &scanState); err == nil {
+		s.lastScanned = scanState.LastScanned
 	}
 	return nil
 }
@@ -144,7 +154,24 @@ func (s *Storage) SaveData() error {
 	if s.metrics != nil {
 		s.metrics.UpdateLatency(time.Since(start))
 	}
+	// Save scan state (best-effort)
+	_ = s.saveJSON(s.lastScannedFile, map[string]int{"last_scanned": s.lastScanned})
 	return nil
+}
+
+// GetLastScanned возвращает последний пронумерованный ITS, который мы проверяли.
+func (s *Storage) GetLastScanned() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastScanned
+}
+
+// SetLastScanned устанавливает последний проверенный пронумерованный ITS.
+func (s *Storage) SetLastScanned(v int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastScanned = v
+	s.isDirty = true
 }
 
 // loadJSON загружает данные из JSON файла
@@ -184,11 +211,33 @@ func (s *Storage) AddKnownTask(taskID int64) {
 	s.isDirty = true
 }
 
+// AddKnownKey добавляет произвольный строковый ключ задачи (например, ExternalID/UUID)
+// в набор известных задач.
+func (s *Storage) AddKnownKey(key string) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.knownTasks[key] = true
+	s.isDirty = true
+}
+
 // IsKnownTask возвращает true, если задача уже была увидена ранее.
 func (s *Storage) IsKnownTask(taskID int64) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.knownTasks[fmt.Sprintf("%d", taskID)]
+}
+
+// IsKnownKey проверяет, содержится ли в наборе известных задач заданный строковый ключ.
+func (s *Storage) IsKnownKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.knownTasks[key]
 }
 
 // AddChatID добавляет идентификатор чата, в который будут отправляться уведомления.

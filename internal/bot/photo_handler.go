@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -36,6 +37,10 @@ func (b *Bot) handlePhoto(c telebot.Context) error {
 			return c.Send("Ошибка при обработке фотографии.")
 		}
 		tmpName := tmpFile.Name()
+		// Close the file handle so other processes (telebot.Download) can write/replace it and we can remove it later
+		if cerr := tmpFile.Close(); cerr != nil {
+			log.Printf("Ошибка закрытия временного файла %s: %v", tmpName, cerr)
+		}
 		defer func() {
 			if err := os.Remove(tmpName); err != nil {
 				log.Printf("Ошибка удаления временного файла %s: %v", tmpName, err)
@@ -62,9 +67,14 @@ func (b *Bot) handlePhoto(c telebot.Context) error {
 		}
 
 		// Создаем задачу с фотографией
+		user, _ := b.storage.GetUser(c.Sender().ID)
+		desc := caption
+		if user != nil {
+			desc = b.formatTaskDescription(user, caption)
+		}
 		task := &models.Task{
-			Title:       state.Title,
-			Description: caption,
+			Title:       b.formatTaskTitle(user, state.Title),
+			Description: desc,
 			Status:      models.TaskStatusNew,
 			BoardID:     b.boardID,
 			Priority:    1,
@@ -73,23 +83,72 @@ func (b *Bot) handlePhoto(c telebot.Context) error {
 			CreatedAt:   time.Now(),
 		}
 
+		if task.ColumnID == "" {
+			task.ColumnID = b.defaultColumn
+		}
+
 		// Отправляем задачу в Yougile
 		if err := b.yougileClient.CreateTask(task); err != nil {
 			log.Printf("Ошибка создания задачи в Yougile: %v", err)
 			return c.Send("Произошла ошибка при создании задачи. Пожалуйста, попробуйте позже.")
 		}
 
-		// Добавляем фотографию как вложение
-		attachment := &models.Attachment{
-			ID:        fmt.Sprintf("img_%d.jpg", time.Now().Unix()),
-			Type:      models.AttachmentTypeImage,
-			FileID:    photo.FileID,
-			CreatedAt: time.Now(),
-		}
+		// Подготовим идентификатор файла и FileID для комментария.
+		//
+		// Примечание: в текущей версии мы сохраняем фотографию локально и добавляем текстовую
+		// ссылку в комментарий задачи вместо прямой загрузки/прикрепления к Yougile.
+		// На практике это сделано потому, что интеграция загрузки вложений в API Yougile
+		// пока не реализована/не надёжна для этого инстанса — поэтому сохраняем копию
+		// на диск (`data/uploads`) и оставляем Telegram FileID в комментарии на случай,
+		// если позже захотим подтянуть файл из Telegram или реализовать uploadAttachment.
+		//
+		// Чтобы вернуть полноценную загрузку вложений, нужно реализовать в `internal/api`
+		// метод UploadAttachment(filePath string, taskID string) error и вызвать его здесь.
+		attID := fmt.Sprintf("img_%d.jpg", time.Now().Unix())
+		fileID := photo.FileID
 
-		if err := b.yougileClient.UploadAttachment(task.ID, attachment, fileData); err != nil {
-			log.Printf("Ошибка загрузки файла в Yougile: %v", err)
-			// Даже если произошла ошибка загрузки файла, мы продолжаем, так как задача уже создана
+		// Save file locally and add a textual comment to the task with reference to the saved file
+		uploadsDir := "data/uploads"
+		if err := os.MkdirAll(uploadsDir, 0755); err != nil {
+			log.Printf("Ошибка создания каталога для загрузок: %v", err)
+		}
+		savedPath := filepath.Join(uploadsDir, attID)
+		if werr := os.WriteFile(savedPath, fileData, 0644); werr != nil {
+			log.Printf("Ошибка сохранения файла локально: %v", werr)
+		} else {
+			// create a comment referencing the saved file and telegram file id
+			commentText := fmt.Sprintf("%s\n[Фотография сохранена локально: %s]\n[Telegram FileID: %s]", caption, savedPath, fileID)
+			comment := &models.Comment{
+				TaskID:    task.ID,
+				AuthorID:  strconv.FormatInt(c.Sender().ID, 10),
+				Text:      commentText,
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			taskIDStr := task.ExternalID
+			if taskIDStr == "" {
+				taskIDStr = strconv.FormatInt(task.ID, 10)
+			}
+			if cerr := b.yougileClient.AddComment(taskIDStr, comment); cerr != nil {
+				log.Printf("Ошибка добавления комментария к задаче (локальная ссылка): %v", cerr)
+			} else {
+				// persist locally
+				b.storage.AddTask(task)
+				task.Comments = append(task.Comments, *comment)
+				b.storage.UpdateTask(task)
+				// ensure we also update any cached tasks list
+				tasks := b.storage.GetTasks()
+				for _, t := range tasks {
+					if t.ID == task.ID {
+						t.Comments = append(t.Comments, *comment)
+						b.storage.UpdateTask(t)
+						break
+					}
+				}
+				if sErr := b.storage.SaveData(); sErr != nil {
+					log.Printf("Ошибка сохранения задачи с комментарием: %v", sErr)
+				}
+			}
 		}
 
 		// Сохраняем задачу локально
@@ -102,7 +161,7 @@ func (b *Bot) handlePhoto(c telebot.Context) error {
 		b.startTaskVerification(*task, *user, caption, true, fileData)
 
 		delete(b.taskCreationStates, c.Sender().ID)
-		if err := c.Send("Задача с фотографией отправлена на создание. Вы получите уведомление после её успешного создания.", mainMenu); err != nil {
+		if err := c.Send("Задача с фотографией отправлена на создание. Вы получите уведомление после её успешного создания.", b.menuForContext(c)); err != nil {
 			log.Printf("Ошибка отправки пользователю подтверждения отправки задачи: %v", err)
 		}
 		return nil
@@ -123,6 +182,9 @@ func (b *Bot) handlePhoto(c telebot.Context) error {
 			return c.Send("Ошибка при обработке фотографии.")
 		}
 		tmpName := tmpFile.Name()
+		if cerr := tmpFile.Close(); cerr != nil {
+			log.Printf("Ошибка закрытия временного файла %s: %v", tmpName, cerr)
+		}
 		defer func() {
 			if err := os.Remove(tmpName); err != nil {
 				log.Printf("Ошибка удаления временного файла %s: %v", tmpName, err)
@@ -143,40 +205,51 @@ func (b *Bot) handlePhoto(c telebot.Context) error {
 			return c.Send("Ошибка при обработке фотографии.")
 		}
 
-		// Создаем вложение
-		attachment := &models.Attachment{
-			ID:        fmt.Sprintf("img_%d.jpg", time.Now().Unix()),
-			Type:      models.AttachmentTypeImage,
-			FileID:    photo.FileID,
-			CreatedAt: time.Now(),
-		}
+		// Подготовим идентификатор файла и FileID для комментария (не используем загрузку/attach в Yougile сейчас)
+		attID := fmt.Sprintf("img_%d.jpg", time.Now().Unix())
+		fileID := photo.FileID
 
-		// Загружаем файл в Yougile
-		if err := b.yougileClient.UploadAttachment(taskID, attachment, fileData); err != nil {
-			log.Printf("Ошибка загрузки файла в Yougile: %v", err)
+		// Save file locally and add comment referencing it
+		uploadsDir := "data/uploads"
+		if err := os.MkdirAll(uploadsDir, 0755); err != nil {
+			log.Printf("Ошибка создания каталога для загрузок: %v", err)
+		}
+		savedPath := filepath.Join(uploadsDir, attID)
+		if werr := os.WriteFile(savedPath, fileData, 0644); werr != nil {
+			log.Printf("Ошибка сохранения файла локально: %v", werr)
 			if err2 := c.Send("Ошибка при сохранении фотографии."); err2 != nil {
 				log.Printf("Ошибка отправки сообщения об ошибке пользователю: %v", err2)
 			}
 			return nil
 		}
 
-		// Создаем комментарий с вложением
+		// Создаем комментарий с вложением (текстовая ссылка на локальную копию и Telegram FileID)
 		caption := c.Message().Caption
 		if caption == "" {
 			caption = "[Фотография]"
 		}
 
+		commentText := fmt.Sprintf("%s\n[Фотография сохранена локально: %s]\n[Telegram FileID: %s]", caption, savedPath, fileID)
+
 		comment := &models.Comment{
-			TaskID:      taskID,
-			AuthorID:    strconv.FormatInt(c.Sender().ID, 10),
-			Text:        caption,
-			Attachments: []models.Attachment{*attachment},
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
+			TaskID:    taskID,
+			AuthorID:  strconv.FormatInt(c.Sender().ID, 10),
+			Text:      commentText,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
 		}
 
 		// Добавляем комментарий к задаче
-		if err := b.yougileClient.AddComment(taskID, comment); err != nil {
+		// Add comment to Yougile using string id: prefer ExternalID from storage
+		taskIDStr := strconv.FormatInt(taskID, 10)
+		tasks := b.storage.GetTasks()
+		for _, t := range tasks {
+			if t.ID == taskID && t.ExternalID != "" {
+				taskIDStr = t.ExternalID
+				break
+			}
+		}
+		if err := b.yougileClient.AddComment(taskIDStr, comment); err != nil {
 			log.Printf("Ошибка добавления комментария: %v", err)
 			if err2 := c.Send("Ошибка при добавлении комментария с фотографией."); err2 != nil {
 				log.Printf("Ошибка отправки сообщения об ошибке пользователю: %v", err2)
@@ -184,14 +257,26 @@ func (b *Bot) handlePhoto(c telebot.Context) error {
 			return nil
 		}
 
+		// Persist comment locally
+		for _, t := range tasks {
+			if t.ID == taskID {
+				t.Comments = append(t.Comments, *comment)
+				b.storage.UpdateTask(t)
+				if sErr := b.storage.SaveData(); sErr != nil {
+					log.Printf("Ошибка сохранения комментария в хранилище: %v", sErr)
+				}
+				break
+			}
+		}
+
 		delete(b.commentStates, c.Sender().ID)
-		if err := c.Send("Фотография успешно добавлена к задаче.", mainMenu); err != nil {
+		if err := c.Send("Фотография успешно обработана и ссылка добавлена в комментарий задачи.", b.menuForContext(c)); err != nil {
 			log.Printf("Ошибка отправки подтверждения пользователю: %v", err)
 		}
 		return nil
 	}
 
-	if err := c.Send("Пожалуйста, сначала начните создание новой задачи или выберите задачу для комментирования.", mainMenu); err != nil {
+	if err := c.Send("Пожалуйста, сначала начните создание новой задачи или выберите задачу для комментирования.", b.menuForContext(c)); err != nil {
 		log.Printf("Ошибка отправки подсказки пользователю: %v", err)
 	}
 	return nil

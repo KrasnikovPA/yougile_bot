@@ -2,10 +2,13 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"yougile_bot4/internal/api"
@@ -18,11 +21,16 @@ import (
 
 // Кнопки основного меню
 var (
-	mainMenu   = &telebot.ReplyMarkup{ResizeKeyboard: true}
-	btnHelp    = mainMenu.Text("❓ Помощь")
-	btnAddress = mainMenu.Text("🏠 Изменить адрес")
-	btnNewTask = mainMenu.Text("📝 Новая задача")
-	btnFAQ     = mainMenu.Text("ℹ️ Частые вопросы")
+	// Global menus for users and admins
+	mainMenuUser  = &telebot.ReplyMarkup{ResizeKeyboard: true}
+	mainMenuAdmin = &telebot.ReplyMarkup{ResizeKeyboard: true}
+
+	btnHelp    = mainMenuUser.Text("❓ Помощь")
+	btnNewTask = mainMenuUser.Text("📝 Новая задача")
+	btnFAQ     = mainMenuUser.Text("ℹ️ Частые вопросы")
+	// Admin-specific buttons
+	btnAddress = mainMenuAdmin.Text("🏠 Изменить адрес")
+	btnUsers   = mainMenuAdmin.Text("👥 Пользователи")
 
 	// Кнопки для администратора
 	adminMenu  = &telebot.ReplyMarkup{ResizeKeyboard: true}
@@ -63,6 +71,11 @@ type Bot struct {
 	pendingReqs        map[int64]*models.PendingRequest    // запросы, ожидающие подтверждения
 	adminActions       map[int64]*AdminAction              // состояния действий администратора
 	adminUserStates    map[int64]*AdminUserState           // состояния управления пользователями
+	defaultColumn      string
+	// full scan control
+	fullScanCancel  context.CancelFunc
+	fullScanMu      sync.Mutex
+	fullScanRunning bool
 }
 
 // NewBot создает и настраивает экземпляр Bot, регистрирует обработчики команд.
@@ -94,13 +107,21 @@ func NewBot(token string, storage *storage.Storage, yougileToken string, boardID
 		commentStates:      make(map[int64]int64),
 		timeStates:         make(map[int64]int64),
 		adminUserStates:    make(map[int64]*AdminUserState),
+		defaultColumn:      os.Getenv("COLUMN_ID"),
 	}
 
 	// Настраиваем клавиатуру для основного меню
-	mainMenu.Reply(
-		mainMenu.Row(btnNewTask),
-		mainMenu.Row(btnHelp, btnAddress),
-		mainMenu.Row(btnFAQ),
+	mainMenuUser.Reply(
+		mainMenuUser.Row(btnNewTask),
+		mainMenuUser.Row(btnHelp),
+		mainMenuUser.Row(btnFAQ),
+	)
+
+	mainMenuAdmin.Reply(
+		mainMenuAdmin.Row(btnNewTask),
+		mainMenuAdmin.Row(btnHelp),
+		mainMenuAdmin.Row(btnUsers),
+		mainMenuAdmin.Row(btnFAQ),
 	)
 
 	// Настраиваем клавиатуру для администратора
@@ -108,8 +129,152 @@ func NewBot(token string, storage *storage.Storage, yougileToken string, boardID
 		adminMenu.Row(btnApprove, btnReject),
 	)
 
+	// Кнопка для просмотра пользователей (для админов)
+	// Регистрация обработчика производится в setupHandlers
+
 	bot.setupHandlers()
 	return bot, nil
+}
+
+// menuForUserID возвращает подходящее главное меню для пользователя по его TelegramID.
+func (b *Bot) menuForUserID(id int64) interface{} {
+	if u, ok := b.storage.GetUser(id); ok {
+		if u.Role == models.RoleAdmin {
+			return mainMenuAdmin
+		}
+	}
+	return mainMenuUser
+}
+
+// menuForContext возвращает меню для пользователя из telebot.Context.
+func (b *Bot) menuForContext(c telebot.Context) interface{} {
+	if c == nil || c.Sender() == nil {
+		return mainMenuUser
+	}
+	return b.menuForUserID(c.Sender().ID)
+}
+
+// formatTaskDescription формирует описание задачи и в конце добавляет в скобках
+// адрес, кабинет и должность; имя/фамилия не добавляются (они будут в заголовке).
+func (b *Bot) formatTaskDescription(user *models.User, original string) string {
+	// Собираем постфикс (адрес, кабинет, должность)
+	parts := []string{}
+	if user.BuildingAddress != "" {
+		parts = append(parts, user.BuildingAddress)
+	} else if user.Address != "" {
+		parts = append(parts, user.Address)
+	}
+	if user.RoomNumber != "" {
+		parts = append(parts, "каб. "+user.RoomNumber)
+	}
+	if user.Position != "" {
+		parts = append(parts, user.Position)
+	}
+	postfix := ""
+	if len(parts) > 0 {
+		postfix = " (" + strings.Join(parts, ", ") + ")"
+	}
+
+	original = strings.TrimSpace(original)
+	if original == "" {
+		return strings.TrimSpace(postfix)
+	}
+	return original + postfix
+}
+
+// formatTaskTitle добавляет имя и фамилию в начало заголовка задачи: "Имя Фамилия. <Title>"
+func (b *Bot) formatTaskTitle(user *models.User, title string) string {
+	name := strings.TrimSpace(user.FirstName + " " + user.LastName)
+	if name == "" {
+		return strings.TrimSpace(title)
+	}
+	if title == "" {
+		return name + "."
+	}
+	return name + ". " + strings.TrimSpace(title)
+}
+
+// RescanTasks выполняет немедленную проверку задач через API Yougile и
+// отправляет уведомления для новых задач. Возвращает ошибку при неудаче.
+func (b *Bot) RescanTasks(limit int) error {
+	tasks, err := b.yougileClient.GetTasks(limit)
+	if err != nil {
+		return fmt.Errorf("RescanTasks: GetTasks failed: %w", err)
+	}
+
+	for _, task := range tasks {
+		key := ""
+		if task.ExternalID != "" {
+			key = task.ExternalID
+		} else if task.Key != "" {
+			key = task.Key
+		} else if task.ID != 0 {
+			key = fmt.Sprintf("%d", task.ID)
+		}
+		if key == "" {
+			continue
+		}
+		known := b.storage.IsKnownKey(key)
+		log.Printf("RescanTasks: task Key=%s ID=%d ExternalID=%s Title=%q Done=%v Known=%v", key, task.ID, task.ExternalID, task.Title, task.Done, known)
+		if !known {
+			b.storage.AddKnownKey(key)
+			if task.ID != 0 {
+				b.storage.AddKnownTask(task.ID)
+			}
+			if !task.Done {
+				b.SendNotification(b.formatTaskNotification(task))
+			}
+		}
+	}
+	return nil
+}
+
+// formatTaskNotification формирует текст уведомления о задаче (аналогично реализации в main).
+func (b *Bot) formatTaskNotification(task models.Task) string {
+	var status, priority string
+
+	if task.Done {
+		status = "✅"
+	} else {
+		status = "🔵"
+	}
+
+	switch task.Priority {
+	case 1:
+		priority = "⚡️ Высокий"
+	case 2:
+		priority = "⭐️ Средний"
+	default:
+		priority = "📌 Обычный"
+	}
+
+	var dueDate string
+	if !task.DueDate.IsZero() {
+		dueDate = fmt.Sprintf("\n📅 Срок: %s", task.DueDate.Format("02.01.2006"))
+	}
+
+	var assignee string
+	if task.Assignee != "" {
+		assignee = fmt.Sprintf("\n👤 Исполнитель: %s", task.Assignee)
+	}
+
+	msg := fmt.Sprintf("%s Новая задача\n"+
+		"📎 %s\n"+
+		"🏷 %s%s%s",
+		status, task.Title, priority, dueDate, assignee)
+
+	if task.Description != "" {
+		descLen := len(task.Description)
+		if descLen > 200 {
+			descLen = 200
+		}
+		msg += fmt.Sprintf("\n\n📝 %s", task.Description[:descLen])
+		if len(task.Description) > 200 {
+			msg += "..."
+		}
+	}
+
+	return msg
 }
 
 // setupHandlers настраивает обработчики команд
@@ -121,9 +286,51 @@ func (b *Bot) setupHandlers() {
 	// Команда для создания новой задачи через конструктор
 	b.bot.Handle("/newtask", b.handleTaskConstructor)
 
+	// Admin commands to manage notification target chat IDs
+	b.bot.Handle("/addadmin", func(c telebot.Context) error {
+		sender, exists := b.storage.GetUser(c.Sender().ID)
+		if !exists || sender.Role != models.RoleAdmin {
+			return c.Send("Команда доступна только администраторам.")
+		}
+		arg := strings.TrimSpace(strings.TrimPrefix(c.Text(), "/addadmin"))
+		var chatID int64
+		if arg == "" {
+			chatID = c.Sender().ID
+		} else {
+			v, err := strconv.ParseInt(arg, 10, 64)
+			if err != nil {
+				return c.Send("Неверный формат chat id. Использование: /addadmin <chatid> или просто /addadmin чтобы добавить текущий чат")
+			}
+			chatID = v
+		}
+		b.storage.AddChatID(chatID)
+		if err := b.storage.SaveData(); err != nil {
+			log.Printf("Ошибка сохранения chat_ids: %v", err)
+		}
+		return c.Send(fmt.Sprintf("Добавлен chat id для уведомлений: %d", chatID))
+	})
+
+	b.bot.Handle("/listadmins", func(c telebot.Context) error {
+		sender, exists := b.storage.GetUser(c.Sender().ID)
+		if !exists || sender.Role != models.RoleAdmin {
+			return c.Send("Команда доступна только администраторам.")
+		}
+		chats := b.storage.GetChatIDs()
+		if len(chats) == 0 {
+			return c.Send("Список chat_id пуст. Добавьте текущий чат: /addadmin")
+		}
+		var sb strings.Builder
+		sb.WriteString("Зарегистрированные chat_id:\n")
+		for _, id := range chats {
+			sb.WriteString(fmt.Sprintf("- %d\n", id))
+		}
+		return c.Send(sb.String())
+	})
+
 	// Обработчики кнопок
 	b.bot.Handle(&btnHelp, b.handleHelp)
 	b.bot.Handle(&btnAddress, b.handleChangeAddress)
+	b.bot.Handle(&btnUsers, b.handleListUsers)
 	b.bot.Handle(&btnApprove, b.handleApprove)
 	b.bot.Handle(&btnReject, b.handleReject)
 	b.bot.Handle(&btnFAQ, b.handleFAQ)
@@ -133,6 +340,35 @@ func (b *Bot) setupHandlers() {
 	b.bot.Handle("/promote_admin", b.handlePromoteAdmin)
 	b.bot.Handle("/demote_admin", b.handleDemoteAdmin)
 	b.bot.Handle("/list_users", b.handleListUsers)
+	// Full scan commands (admins only)
+	b.bot.Handle("/fullscan", func(c telebot.Context) error {
+		sender, exists := b.storage.GetUser(c.Sender().ID)
+		if !exists || sender.Role != models.RoleAdmin {
+			return c.Send("Команда доступна только администраторам.")
+		}
+		// optional arg: range
+		arg := strings.TrimSpace(strings.TrimPrefix(c.Text(), "/fullscan"))
+		rng := 100
+		if arg != "" {
+			if v, err := strconv.Atoi(arg); err == nil && v > 0 {
+				rng = v
+			}
+		}
+		if err := b.startFullScan(rng); err != nil {
+			return c.Send(fmt.Sprintf("Не удалось запустить fullscan: %v", err))
+		}
+		return c.Send(fmt.Sprintf("Full scan запущен (%d запросов)", rng))
+	})
+	b.bot.Handle("/stopfullscan", func(c telebot.Context) error {
+		sender, exists := b.storage.GetUser(c.Sender().ID)
+		if !exists || sender.Role != models.RoleAdmin {
+			return c.Send("Команда доступна только администраторам.")
+		}
+		if err := b.stopFullScan(); err != nil {
+			return c.Send(fmt.Sprintf("Не удалось остановить fullscan: %v", err))
+		}
+		return c.Send("Full scan остановлен")
+	})
 
 	// Обработчики кнопок управления пользователями
 	b.bot.Handle(&btnPromoteAdmin, b.handlePromoteAdminButton)
@@ -144,16 +380,79 @@ func (b *Bot) setupHandlers() {
 
 	// Callback-обработчики
 	b.bot.Handle(telebot.OnCallback, func(c telebot.Context) error {
-		if c.Callback().Unique == "faq" {
-			return b.handleFAQCallback(c)
-		}
+		// Debug log: показать все входящие callback'ы и очищённую data
+		if c != nil && c.Callback() != nil {
+			raw := c.Callback().Data
+			sanitized := strings.TrimSpace(raw)
+			log.Printf("Callback received: unique=%s raw=%q sanitized=%q from=%d", c.Callback().Unique, raw, sanitized, c.Sender().ID)
 
-		if strings.HasPrefix(c.Callback().Data, "task_step|") {
-			return b.handleTaskStepCallback(c)
-		}
+			// Используем sanitized для всех проверок
+			data := sanitized
 
-		if strings.HasPrefix(c.Callback().Data, "task_select|") {
-			return b.handleTaskSelectCallback(c)
+			if c.Callback().Unique == "faq" {
+				return b.handleFAQCallback(c)
+			}
+
+			// Обработка FAQ в формате data: faq|key
+			if strings.HasPrefix(data, "faq|") {
+				// извлечь ключ и положить в Callback.Data
+				key := strings.TrimPrefix(data, "faq|")
+				c.Callback().Data = key
+				return b.handleFAQCallback(c)
+			}
+
+			if strings.HasPrefix(data, "task_step|") {
+				// Подменим Callback.Data на очищенную версию для обработчика
+				c.Callback().Data = data
+				return b.handleTaskStepCallback(c)
+			}
+
+			if strings.HasPrefix(data, "task_select|") {
+				c.Callback().Data = data
+				return b.handleTaskSelectCallback(c)
+			}
+
+			if strings.HasPrefix(data, "select_user|") {
+				c.Callback().Data = data
+				return b.handleSelectUser(c)
+			}
+			if strings.HasPrefix(data, "make_admin|") {
+				c.Callback().Data = data
+				return b.handleMakeAdminCallback(c)
+			}
+			if strings.HasPrefix(data, "make_user|") {
+				c.Callback().Data = data
+				return b.handleMakeUserCallback(c)
+			}
+
+			if strings.HasPrefix(data, "edit_role|") {
+				c.Callback().Data = data
+				return b.handleEditRole(c)
+			}
+			if strings.HasPrefix(data, "edit_address|") {
+				c.Callback().Data = data
+				return b.handleEditAddress(c)
+			}
+			if strings.HasPrefix(data, "edit_name|") {
+				c.Callback().Data = data
+				return b.handleEditName(c)
+			}
+			if strings.HasPrefix(data, "back") {
+				// Возврат к списку пользователей
+				return b.handleListUsers(c)
+			}
+
+			// Обработка approve/reject от inline-кнопок для регистрации и изменений адреса
+			if strings.HasPrefix(data, "approve|") {
+				c.Callback().Data = data
+				return b.handleApprove(c)
+			}
+			if strings.HasPrefix(data, "reject|") {
+				c.Callback().Data = data
+				return b.handleReject(c)
+			}
+		} else {
+			log.Printf("Callback received: c or c.Callback is nil")
 		}
 
 		switch c.Callback().Data {
@@ -171,6 +470,101 @@ func (b *Bot) setupHandlers() {
 	b.bot.Handle(&btnNewTask, b.handleTaskConstructor) // Используем конструктор вместо простого создания
 	b.bot.Handle(&btnSkip, b.handleSkip)
 
+	// Команда для немедленной проверки новых задач (только для админов)
+	b.bot.Handle("/rescan", func(c telebot.Context) error {
+		sender, exists := b.storage.GetUser(c.Sender().ID)
+		if !exists || sender.Role != models.RoleAdmin {
+			return c.Send("Команда доступна только администраторам.")
+		}
+		// Выполним сканирование
+		if err := b.RescanTasks(100); err != nil {
+			log.Printf("rescan: error: %v", err)
+			return c.Send(fmt.Sprintf("Ошибка при сканировании: %v", err))
+		}
+		return c.Send("Рескан завершён. Проверьте логи для деталей.")
+	})
+
+	// Команда для поиска конкретной задачи по ключу/ID (админам)
+	b.bot.Handle("/findtask", func(c telebot.Context) error {
+		admin, exists := b.storage.GetUser(c.Sender().ID)
+		if !exists || admin.Role != models.RoleAdmin {
+			return c.Send("Команда доступна только администраторам.")
+		}
+		// Получаем аргумент после команды
+		args := strings.TrimSpace(strings.TrimPrefix(c.Text(), "/findtask"))
+		if args == "" {
+			return c.Send("Использование: /findtask <ключ_или_id>")
+		}
+		key := args
+		// Попытаемся получить задачу по ID/ключу
+		task, err := b.yougileClient.GetTaskByID(key)
+		if err != nil {
+			log.Printf("findtask: GetTaskByID(%s) error: %v", key, err)
+			return c.Send(fmt.Sprintf("Ошибка при запросе задачи: %v", err))
+		}
+		if task == nil {
+			return c.Send("Задача не найдена через API Yougile.")
+		}
+		// Формируем краткий ответ
+		resp := fmt.Sprintf("Найдена задача:\nID=%d\nExternalID=%s\nKey=%s\nTitle=%s\nDone=%v\nBoard=%s\nColumn=%s", task.ID, task.ExternalID, task.Key, task.Title, task.Done, task.BoardID, task.ColumnID)
+		return c.Send(resp)
+	})
+
+	// Admin helper: force notify about a task by key (marks as known and sends notification)
+	b.bot.Handle("/notify", func(c telebot.Context) error {
+		sender, exists := b.storage.GetUser(c.Sender().ID)
+		if !exists || sender.Role != models.RoleAdmin {
+			return c.Send("Команда доступна только администраторам.")
+		}
+		args := strings.TrimSpace(strings.TrimPrefix(c.Text(), "/notify"))
+		if args == "" {
+			return c.Send("Использование: /notify <ключ_или_id> — пометить задачу как новую и разослать уведомление")
+		}
+		key := args
+		task, err := b.yougileClient.GetTaskByID(key)
+		if err != nil {
+			log.Printf("notify: GetTaskByID(%s) error: %v", key, err)
+			return c.Send(fmt.Sprintf("Ошибка при запросе задачи: %v", err))
+		}
+		if task == nil {
+			return c.Send("Задача не найдена через API Yougile.")
+		}
+
+		// Determine tracking key
+		tkey := ""
+		if task.ExternalID != "" {
+			tkey = task.ExternalID
+		} else if task.Key != "" {
+			tkey = task.Key
+		} else if task.ID != 0 {
+			tkey = fmt.Sprintf("%d", task.ID)
+		}
+		if tkey == "" {
+			return c.Send("Не удалось определить ключ задачи для отслеживания.")
+		}
+
+		// Mark known and persist
+		if !b.storage.IsKnownKey(tkey) {
+			b.storage.AddKnownKey(tkey)
+		}
+		if task.ID != 0 && !b.storage.IsKnownTask(task.ID) {
+			b.storage.AddKnownTask(task.ID)
+		}
+		if err := b.storage.SaveData(); err != nil {
+			log.Printf("notify: error saving storage: %v", err)
+		}
+
+		// Send notification if task not done
+		if !task.Done {
+			chats := b.storage.GetChatIDs()
+			log.Printf("notify: sending notification for %s to %d chats", tkey, len(chats))
+			b.SendNotification(b.formatTaskNotification(*task))
+			log.Printf("notify: SendNotification called for %s", tkey)
+			return c.Send(fmt.Sprintf("Уведомление отправлено для %s (чатов: %d)", tkey, len(chats)))
+		}
+		return c.Send("Задача помечена как известная, но не отправлено уведомление — задача помечена как завершённая/удалённая.")
+	})
+
 	// Обработчик текстовых сообщений
 	b.bot.Handle(telebot.OnText, b.handleMessage)
 
@@ -186,7 +580,7 @@ func (b *Bot) handleStart(c telebot.Context) error {
 	// Проверяем, не зарегистрирован ли уже пользователь
 	if user, exists := b.storage.GetUser(c.Sender().ID); exists {
 		if user.Approved {
-			return c.Send("Вы уже зарегистрированы и подтверждены в системе.", mainMenu)
+			return c.Send("Вы уже зарегистрированы и подтверждены в системе.", b.menuForContext(c))
 		}
 		return c.Send("Ваша заявка на регистрацию уже находится на рассмотрении.")
 	}
@@ -215,22 +609,17 @@ func (b *Bot) handleStart(c telebot.Context) error {
 
 // handleHelp обрабатывает команду /help
 func (b *Bot) handleHelp(c telebot.Context) error {
-	user, exists := b.storage.GetUser(c.Sender().ID)
+	_, exists := b.storage.GetUser(c.Sender().ID)
 	if !exists {
 		return c.Send(`Доступные команды:
 /start - Начать работу с ботом
 /help - Показать это сообщение`)
 	}
 
-	var menu interface{} = mainMenu
-	if user.Role == models.RoleAdmin {
-		menu = adminMenu
-	}
-
 	return c.Send(`Доступные команды:
-/start - Начать работу с ботом
-/help - Показать это сообщение
-/address - Изменить ваш адрес`, menu)
+	/start - Начать работу с ботом
+	/help - Показать это сообщение
+	/address - Изменить ваш адрес`, b.menuForContext(c))
 }
 
 // handleChangeAddress обрабатывает команду изменения адреса
@@ -254,6 +643,75 @@ func (b *Bot) handleChangeAddress(c telebot.Context) error {
 
 // handleMessage обрабатывает текстовые сообщения
 func (b *Bot) handleMessage(c telebot.Context) error {
+	// Обработка состояний администратора при редактировании пользователя (имя/адрес)
+	if state, ok := b.adminUserStates[c.Sender().ID]; ok {
+		// Проверяем таймаут состояния
+		if time.Since(state.StartTime) > 5*time.Minute {
+			delete(b.adminUserStates, c.Sender().ID)
+			return c.Send("Время ожидания истекло. Пожалуйста, начните сначала.")
+		}
+
+		user, exists := b.storage.GetUser(state.UserID)
+		if !exists {
+			delete(b.adminUserStates, c.Sender().ID)
+			return c.Send("Пользователь больше не найден.")
+		}
+
+		switch state.Action {
+		case "edit_address":
+			// stage waiting_building or waiting_room
+			if state.Stage == "waiting_building" {
+				building := strings.TrimSpace(c.Text())
+				if len(building) < 5 {
+					return c.Send("Адрес здания должен содержать минимум 5 символов. Пожалуйста, укажите более подробный адрес.")
+				}
+				user.BuildingAddress = building
+				state.Stage = "waiting_room"
+				b.adminUserStates[c.Sender().ID] = state
+				return c.Send("Теперь введите номер кабинета для выбранного пользователя.")
+			}
+			if state.Stage == "waiting_room" {
+				room := strings.TrimSpace(c.Text())
+				if len(room) < 1 {
+					return c.Send("Пожалуйста, укажите номер кабинета.")
+				}
+				user.RoomNumber = room
+				user.AddressChange = false
+				b.storage.UpdateUser(user)
+				if err := b.storage.SaveData(); err != nil {
+					log.Printf("Ошибка сохранения данных при редактировании адреса: %v", err)
+				}
+				delete(b.adminUserStates, c.Sender().ID)
+				return c.Send("Адрес пользователя обновлён.")
+			}
+
+		case "edit_name":
+			if state.Stage == "waiting_firstname" {
+				firstname := strings.TrimSpace(c.Text())
+				if len(firstname) < 2 {
+					return c.Send("Имя должно содержать минимум 2 символа. Пожалуйста, попробуйте снова.")
+				}
+				user.FirstName = firstname
+				state.Stage = "waiting_lastname"
+				b.adminUserStates[c.Sender().ID] = state
+				return c.Send("Теперь введите фамилию для выбранного пользователя.")
+			}
+			if state.Stage == "waiting_lastname" {
+				lastname := strings.TrimSpace(c.Text())
+				if len(lastname) < 2 {
+					return c.Send("Фамилия должна содержать минимум 2 символа. Пожалуйста, попробуйте снова.")
+				}
+				user.LastName = lastname
+				b.storage.UpdateUser(user)
+				if err := b.storage.SaveData(); err != nil {
+					log.Printf("Ошибка сохранения данных при редактировании имени: %v", err)
+				}
+				delete(b.adminUserStates, c.Sender().ID)
+				return c.Send("Имя пользователя обновлено.")
+			}
+		}
+	}
+
 	// Проверяем, изменяет ли пользователь адрес
 	if stage, isChangingAddress := b.addressChange[c.Sender().ID]; isChangingAddress {
 		input := strings.TrimSpace(c.Text())
@@ -344,6 +802,34 @@ func (b *Bot) handleMessage(c telebot.Context) error {
 			if err := b.storage.SaveData(); err != nil {
 				log.Printf("Ошибка сохранения данных: %v", err)
 			}
+
+			// Создаем запрос на подтверждение регистрации и уведомляем администраторов
+			req := &models.PendingRequest{
+				UserID:    regState.User.TelegramID,
+				Type:      "registration",
+				CreatedAt: time.Now(),
+			}
+			b.pendingReqs[regState.User.TelegramID] = req
+
+			// Формируем inline-клавиатуру для подтверждения/отклонения
+			menu := &telebot.ReplyMarkup{}
+			uidStr := strconv.FormatInt(regState.User.TelegramID, 10)
+			btnApprove := menu.Data("✅ Подтвердить", "approve|"+uidStr)
+			btnReject := menu.Data("❌ Отклонить", "reject|"+uidStr)
+			menu.Inline(menu.Row(btnApprove, btnReject))
+
+			// Отправляем уведомление всем администраторам
+			for _, u := range b.storage.GetUsers() {
+				if u.Role != models.RoleAdmin {
+					continue
+				}
+				msg := fmt.Sprintf("Новая заявка на регистрацию:\n👤 %s %s (%d)\n💼 Должность: %s",
+					regState.User.FirstName, regState.User.LastName, regState.User.TelegramID, regState.User.Position)
+				if _, err := b.bot.Send(&telebot.User{ID: u.TelegramID}, msg, menu); err != nil {
+					log.Printf("Ошибка отправки уведомления администратору %d: %v", u.TelegramID, err)
+				}
+			}
+
 			delete(b.regStates, c.Sender().ID)
 			return c.Send("Спасибо! Ваша регистрация принята. Ожидайте подтверждения администратора.")
 		}
@@ -452,6 +938,114 @@ func (b *Bot) Start() {
 	go b.bot.Start()
 }
 
+// startFullScan запускает фоновый fullscan, который проверяет пронумерованные ключи ITS-<n>.
+// rng — количество последовательных номеров для проверки за запуск.
+func (b *Bot) startFullScan(rng int) error {
+	b.fullScanMu.Lock()
+	defer b.fullScanMu.Unlock()
+	if b.fullScanRunning {
+		return fmt.Errorf("fullscan уже запущен")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	b.fullScanCancel = cancel
+	b.fullScanRunning = true
+	go b.fullScanLoop(ctx, rng)
+	return nil
+}
+
+// stopFullScan останавливает запущенный fullscan.
+func (b *Bot) stopFullScan() error {
+	b.fullScanMu.Lock()
+	defer b.fullScanMu.Unlock()
+	if !b.fullScanRunning {
+		return fmt.Errorf("fullscan не запущен")
+	}
+	if b.fullScanCancel != nil {
+		b.fullScanCancel()
+	}
+	b.fullScanRunning = false
+	return nil
+}
+
+// fullScanLoop выполняет последовательные вызовы GetTaskByID для ITS-N с динамическим throttle.
+// Поведение: пока находятся новые задачи — 1 запрос в секунду; если в течение 1 минуты новых задач нет — 1 запрос в минуту.
+func (b *Bot) fullScanLoop(ctx context.Context, rng int) {
+	defer func() {
+		b.fullScanMu.Lock()
+		b.fullScanRunning = false
+		b.fullScanMu.Unlock()
+	}()
+
+	last := b.storage.GetLastScanned()
+	if last < 0 {
+		last = 0
+	}
+
+	idleSince := time.Time{}
+	throttleShort := time.Second
+	throttleLong := time.Minute
+	currentThrottle := throttleShort
+
+	for i := 1; i <= rng; i++ {
+		select {
+		case <-ctx.Done():
+			log.Printf("fullScanLoop: cancelled")
+			return
+		default:
+		}
+
+		n := last + i
+		key := fmt.Sprintf("ITS-%d", n)
+		task, err := b.yougileClient.GetTaskByID(key)
+		if err == nil && task != nil {
+			// found
+			tkey := key
+			if task.Key != "" {
+				tkey = task.Key
+			} else if task.ExternalID != "" {
+				tkey = task.ExternalID
+			}
+			known := b.storage.IsKnownKey(tkey)
+			log.Printf("fullScanLoop: found task by key=%s id=%d external=%s title=%q done=%v known=%v", tkey, task.ID, task.ExternalID, task.Title, task.Done, known)
+			if !known {
+				b.storage.AddKnownKey(tkey)
+				if task.ID != 0 {
+					b.storage.AddKnownTask(task.ID)
+				}
+				if !task.Done {
+					// Log chat targets
+					chats := b.storage.GetChatIDs()
+					log.Printf("fullScanLoop: sending notification for task %s to %d chats", tkey, len(chats))
+					b.SendNotification(b.formatTaskNotification(*task))
+					log.Printf("fullScanLoop: SendNotification called for task %s", tkey)
+				}
+			}
+			b.storage.SetLastScanned(n)
+			idleSince = time.Time{} // reset idle timer
+			currentThrottle = throttleShort
+		} else {
+			// not found or error
+			if idleSince.IsZero() {
+				idleSince = time.Now()
+			}
+			if time.Since(idleSince) > time.Minute {
+				currentThrottle = throttleLong
+			}
+		}
+
+		// sleep respecting the current throttle but exit early on cancel
+		sleepUntil := time.Now().Add(currentThrottle)
+		for time.Now().Before(sleepUntil) {
+			select {
+			case <-ctx.Done():
+				log.Printf("fullScanLoop: cancelled during sleep")
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+	}
+}
+
 // Stop корректно завершает работу бота и закрывает канал уведомлений.
 func (b *Bot) Stop() {
 	close(b.notifications)
@@ -460,7 +1054,12 @@ func (b *Bot) Stop() {
 
 // SendNotification отправляет указанное сообщение во все чаты, зарегистрированные в хранилище.
 func (b *Bot) SendNotification(msg string) {
-	for _, chatID := range b.storage.GetChatIDs() {
+	chats := b.storage.GetChatIDs()
+	if len(chats) == 0 {
+		log.Printf("SendNotification: пропускаем отправку — нет зарегистрированных chat_ids")
+		return
+	}
+	for _, chatID := range chats {
 		if _, err := b.bot.Send(&telebot.Chat{ID: chatID}, msg); err != nil {
 			log.Printf("Ошибка отправки уведомления в чат %d: %v", chatID, err)
 		}
@@ -516,6 +1115,12 @@ func (b *Bot) showPendingRequests(c telebot.Context) error {
 
 // handleApprove обрабатывает подтверждение регистрации или изменения адреса
 func (b *Bot) handleApprove(c telebot.Context) error {
+	log.Printf("handleApprove invoked by user=%d callback=%v", c.Sender().ID, func() string {
+		if c.Callback() != nil {
+			return c.Callback().Data
+		}
+		return "<nil>"
+	}())
 	admin, exists := b.storage.GetUser(c.Sender().ID)
 	if !exists || admin.Role != models.RoleAdmin {
 		return c.Send("У вас нет прав для выполнения этой команды.")
@@ -554,6 +1159,9 @@ func (b *Bot) handleApprove(c telebot.Context) error {
 		}
 
 		b.storage.UpdateUser(user)
+		if err := b.storage.SaveData(); err != nil {
+			log.Printf("Ошибка сохранения данных после подтверждения: %v", err)
+		}
 		delete(b.pendingReqs, userID)
 
 		// Уведомляем пользователя
@@ -567,6 +1175,12 @@ func (b *Bot) handleApprove(c telebot.Context) error {
 		if _, err := b.bot.Send(&telebot.User{ID: userID}, msg); err != nil {
 			log.Printf("Ошибка отправки уведомления пользователю %d: %v", userID, err)
 		}
+		// Если подтверждена регистрация — показываем основное меню пользователю
+		if req.Type == "registration" {
+			if _, err := b.bot.Send(&telebot.User{ID: userID}, "Добро пожаловать!", b.menuForUserID(userID)); err != nil {
+				log.Printf("Ошибка отправки mainMenu пользователю %d: %v", userID, err)
+			}
+		}
 
 		return c.Send("Запрос подтвержден.")
 	}
@@ -577,6 +1191,12 @@ func (b *Bot) handleApprove(c telebot.Context) error {
 
 // handleReject обрабатывает отклонение регистрации или изменения адреса
 func (b *Bot) handleReject(c telebot.Context) error {
+	log.Printf("handleReject invoked by user=%d callback=%v", c.Sender().ID, func() string {
+		if c.Callback() != nil {
+			return c.Callback().Data
+		}
+		return "<nil>"
+	}())
 	admin, exists := b.storage.GetUser(c.Sender().ID)
 	if !exists || admin.Role != models.RoleAdmin {
 		return c.Send("У вас нет прав для выполнения этой команды.")
@@ -614,6 +1234,13 @@ func (b *Bot) handleReject(c telebot.Context) error {
 			b.storage.UpdateUser(user)
 		}
 
+		// Если это регистрация, удаляем пользователя из storage корректно
+		if req.Type == "registration" {
+			b.storage.DeleteUser(userID)
+			if err := b.storage.SaveData(); err != nil {
+				log.Printf("Ошибка сохранения данных после отклонения: %v", err)
+			}
+		}
 		delete(b.pendingReqs, userID)
 
 		// Уведомляем пользователя

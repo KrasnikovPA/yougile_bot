@@ -23,9 +23,14 @@ func (b *Bot) handleSkip(c telebot.Context) error {
 	}
 
 	// Создаем задачу без комментария
+	user, _ := b.storage.GetUser(c.Sender().ID)
+	desc := ""
+	if user != nil {
+		desc = b.formatTaskDescription(user, "")
+	}
 	task := &models.Task{
-		Title:       state.Title,
-		Description: "",
+		Title:       b.formatTaskTitle(user, state.Title),
+		Description: desc,
 		Status:      models.TaskStatusNew,
 		BoardID:     b.boardID,
 		Priority:    1,
@@ -34,6 +39,10 @@ func (b *Bot) handleSkip(c telebot.Context) error {
 		CreatedAt:   time.Now(),
 	}
 
+	// set default column if configured
+	if task.ColumnID == "" {
+		task.ColumnID = b.defaultColumn
+	}
 	// Отправляем задачу в Yougile
 	if err := b.yougileClient.CreateTask(task); err != nil {
 		log.Printf("Ошибка создания задачи в Yougile: %v", err)
@@ -47,12 +56,16 @@ func (b *Bot) handleSkip(c telebot.Context) error {
 	}
 
 	// Запускаем проверку создания задачи
-	user, _ := b.storage.GetUser(c.Sender().ID)
-	b.startTaskVerification(*task, *user, "", false, nil)
+	if user != nil {
+		b.startTaskVerification(*task, *user, "", false, nil)
+	} else {
+		dummy := &models.User{TelegramID: c.Sender().ID}
+		b.startTaskVerification(*task, *dummy, "", false, nil)
+	}
 
 	// Удаляем состояние создания задачи
 	delete(b.taskCreationStates, c.Sender().ID)
-	return c.Send("Задача отправлена на создание. Вы получите уведомление после её успешного создания.", mainMenu)
+	return c.Send("Задача отправлена на создание. Вы получите уведомление после её успешного создания.", b.menuForContext(c))
 }
 
 // handleTaskText обрабатывает текстовые сообщения при создании задачи
@@ -78,17 +91,25 @@ func (b *Bot) handleTaskText(c telebot.Context) error {
 		}
 
 		// Создаем новую задачу с комментарием
+		user, _ := b.storage.GetUser(c.Sender().ID)
+		desc := msg
+		if user != nil {
+			desc = b.formatTaskDescription(user, msg)
+		}
 		task := &models.Task{
-			Title:       state.Title,
-			Description: msg,
+			Title:       b.formatTaskTitle(user, state.Title),
+			Description: desc,
 			Status:      models.TaskStatusNew,
-			BoardID:     b.boardID,
 			Priority:    1,
 			Assignee:    strconv.FormatInt(c.Sender().ID, 10),
+			BoardID:     b.boardID,
 			Labels:      []string{},
 			CreatedAt:   time.Now(),
 		}
 
+		if task.ColumnID == "" {
+			task.ColumnID = b.defaultColumn
+		}
 		// Отправляем задачу в Yougile
 		if err := b.yougileClient.CreateTask(task); err != nil {
 			log.Printf("Ошибка создания задачи в Yougile: %v", err)
@@ -102,11 +123,15 @@ func (b *Bot) handleTaskText(c telebot.Context) error {
 		}
 
 		// Запускаем проверку создания задачи
-		user, _ := b.storage.GetUser(c.Sender().ID)
-		b.startTaskVerification(*task, *user, msg, false, nil)
+		if user != nil {
+			b.startTaskVerification(*task, *user, msg, false, nil)
+		} else {
+			dummy := &models.User{TelegramID: c.Sender().ID}
+			b.startTaskVerification(*task, *dummy, msg, false, nil)
+		}
 
 		delete(b.taskCreationStates, c.Sender().ID)
-		return c.Send("Задача отправлена на создание. Вы получите уведомление после её успешного создания.", mainMenu)
+		return c.Send("Задача отправлена на создание. Вы получите уведомление после её успешного создания.", b.menuForContext(c))
 	}
 
 	return nil

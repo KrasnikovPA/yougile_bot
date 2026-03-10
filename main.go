@@ -21,6 +21,9 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// defaultScanRange используется при поиске пронумерованных ITS-ключей
+var defaultScanRange = 20
+
 func init() {
 	// Загружаем переменные из .env файла
 	if err := godotenv.Load(); err != nil {
@@ -76,8 +79,8 @@ func main() {
 
 		// Настройки работы бота
 		TasksLimit:      100,              // Максимальное количество задач для получения
-		CheckInterval:   5 * time.Minute,  // Интервал проверки новых задач
-		SaveInterval:    15 * time.Minute, // Интервал сохранения данных
+		CheckInterval:   1 * time.Minute,  // Интервал проверки новых задач
+		SaveInterval:    5 * time.Minute,  // Интервал сохранения данных
 		MinMsgLen:       10,               // Минимальная длина сообщения
 		RegTimeout:      24 * time.Hour,   // Таймаут регистрации
 		HTTPTimeout:     30 * time.Second, // Таймаут HTTP запросов
@@ -135,10 +138,22 @@ func main() {
 
 	yougileClient.SetRetryPolicy(config.RetryCount, config.RetryWait, config.MaxRetryElapsed)
 
+	// If COLUMN_ID is provided in env, pass it to client so GetTasks can filter by column
+	if col := os.Getenv("COLUMN_ID"); col != "" {
+		yougileClient.SetColumnID(col)
+	}
+
+	// scan range for numeric ITS keys (default 20)
+	if sr := os.Getenv("YOUGILE_SCAN_RANGE"); sr != "" {
+		if v, err := strconv.Atoi(sr); err == nil && v > 0 {
+			defaultScanRange = v
+		}
+	}
+
 	// Создание и запуск бота
 	boardID := config.YougileBoard
-	if err != nil {
-		log.Fatalf("Неверный формат ID доски: %v", err)
+	if boardID == "" {
+		log.Fatalf("Неверный формат ID доски: пустой YOUGILE_BOARD")
 	}
 
 	telegramBot, err := bot.NewBot(
@@ -251,17 +266,58 @@ func checkNewTasks(ctx context.Context, client *api.Client, store *storage.Stora
 			return
 		}
 
+		colEnv := os.Getenv("COLUMN_ID")
+		log.Printf("checkNewTasks: %d задач получено", len(tasks))
+
+		// Fallback: if column-scoped fetch returned no tasks but COLUMN_ID is set,
+		// try fetching without column filter (some Yougile instances don't return tasks
+		// for column-scoped queries reliably).
+		if len(tasks) == 0 && colEnv != "" {
+			// temporarily clear columnId on client
+			client.SetColumnID("")
+			broader, berr := client.GetTasks(limit)
+			// restore column ID from env for future runs
+			client.SetColumnID(colEnv)
+			if berr == nil {
+				log.Printf("checkNewTasks: fallback %d задач", len(broader))
+				tasks = broader
+			}
+			// If still empty, trigger a numeric ITS scan in background to discover manual tasks
+			if len(broader) == 0 {
+				go scanNumericKeys(client, store, bot, defaultScanRange)
+			}
+		}
+
 		// Проверяем каждую задачу
+		newCount := 0
+		notifyCount := 0
 		for _, task := range tasks {
-			// Если задача новая (уведомление о ней ещё не отправлялось)
-			if !store.IsKnownTask(task.ID) {
-				// Добавляем задачу в список известных
-				store.AddKnownTask(task.ID)
-				// Отправляем уведомление только если задача не завершена
+			key := ""
+			if task.ExternalID != "" {
+				key = task.ExternalID
+			} else if task.Key != "" {
+				key = task.Key
+			} else if task.ID != 0 {
+				key = fmt.Sprintf("%d", task.ID)
+			}
+			if key == "" {
+				continue
+			}
+			known := store.IsKnownKey(key)
+			if !known {
+				store.AddKnownKey(key)
+				if task.ID != 0 {
+					store.AddKnownTask(task.ID)
+				}
+				newCount++
 				if !task.Done {
 					bot.SendNotification(formatTaskNotification(task))
+					notifyCount++
 				}
 			}
+		}
+		if newCount > 0 {
+			log.Printf("checkNewTasks: новых задач %d, уведомлений %d", newCount, notifyCount)
 		}
 	}
 
@@ -332,4 +388,47 @@ func formatTaskNotification(task models.Task) string {
 	}
 
 	return msg
+}
+
+// scanNumericKeys выполняет быстрый пробег по пронумерованным коротким ключам ITS-N
+// начиная с последнего сохранённого в хранилище значения. Находит задачи через GetTaskByID
+// и уведомляет админов при обнаружении новых.
+func scanNumericKeys(client *api.Client, store *storage.Storage, bot *bot.Bot, rng int) {
+	last := store.GetLastScanned()
+	if last < 0 {
+		last = 0
+	}
+	maxScan := last + rng
+	log.Printf("scanNumericKeys: сканирование ITS-%d..ITS-%d", last+1, maxScan)
+	found := 0
+	notified := 0
+	for n := last + 1; n <= maxScan; n++ {
+		key := fmt.Sprintf("ITS-%d", n)
+		t, err := client.GetTaskByIDQuiet(key)
+		if err != nil || t == nil {
+			continue
+		}
+		taskKey := key
+		if t.Key != "" {
+			taskKey = t.Key
+		} else if t.ExternalID != "" {
+			taskKey = t.ExternalID
+		}
+		known := store.IsKnownKey(taskKey)
+		if !known {
+			store.AddKnownKey(taskKey)
+			if t.ID != 0 {
+				store.AddKnownTask(t.ID)
+			}
+			found++
+			if !t.Done {
+				bot.SendNotification(formatTaskNotification(*t))
+				notified++
+			}
+		}
+		store.SetLastScanned(n)
+	}
+	if found > 0 {
+		log.Printf("scanNumericKeys: найдено новых задач %d, уведомлений %d", found, notified)
+	}
 }

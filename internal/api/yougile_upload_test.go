@@ -37,7 +37,7 @@ func TestUploadAttachmentRetries(t *testing.T) {
 	attachment := &models.Attachment{ID: "file1", Type: models.AttachmentTypeFile}
 	data := []byte("hello")
 
-	if err := c.UploadAttachment(1, attachment, data); err != nil {
+	if err := c.UploadAttachment("1", attachment, data); err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
 

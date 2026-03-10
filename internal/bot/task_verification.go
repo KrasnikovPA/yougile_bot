@@ -3,6 +3,8 @@ package bot
 
 import (
 	"fmt"
+	"log"
+	"strconv"
 	"strings"
 	"time"
 	"yougile_bot4/internal/models"
@@ -51,15 +53,52 @@ func (b *Bot) verifyTask(v *TaskVerification) {
 
 	var foundTask *models.Task
 	for i := range tasks {
-		if tasks[i].ID == v.OriginalTask.ID {
+		// Match by numeric ID
+		if tasks[i].ID != 0 && v.OriginalTask.ID != 0 && tasks[i].ID == v.OriginalTask.ID {
 			foundTask = &tasks[i]
 			break
+		}
+		// Match by ExternalID (UUID or string id)
+		if v.OriginalTask.ExternalID != "" && tasks[i].ExternalID != "" && tasks[i].ExternalID == v.OriginalTask.ExternalID {
+			foundTask = &tasks[i]
+			break
+		}
+		// Some servers may return numeric ID while original stored ExternalID as string; compare string forms
+		if v.OriginalTask.ExternalID != "" {
+			if fmt.Sprintf("%d", tasks[i].ID) == v.OriginalTask.ExternalID {
+				foundTask = &tasks[i]
+				break
+			}
 		}
 	}
 
 	if foundTask == nil {
-		b.handleVerificationFailure(v, "Задача не найдена в Yougile")
-		return
+		log.Printf("verifyTask: initial list scan did not find task. Original IDs: ID=%d ExternalID=%s Title=%s", v.OriginalTask.ID, v.OriginalTask.ExternalID, v.OriginalTask.Title)
+		// Try direct lookup by ExternalID or string ID as a fallback
+		if v.OriginalTask.ExternalID != "" {
+			if t, err := b.yougileClient.GetTaskByID(v.OriginalTask.ExternalID); err == nil && t != nil {
+				log.Printf("verifyTask: found task via GetTaskByID by ExternalID=%s -> ID=%d Title=%s", v.OriginalTask.ExternalID, t.ID, t.Title)
+				foundTask = t
+			} else if err != nil {
+				log.Printf("verifyTask: GetTaskByID by ExternalID=%s error: %v", v.OriginalTask.ExternalID, err)
+			}
+		}
+
+		// As a last resort, try to find by title or description substring in the list we already fetched
+		if foundTask == nil {
+			for i := range tasks {
+				if tasks[i].Title == v.OriginalTask.Title || strings.Contains(tasks[i].Description, v.OriginalContent) {
+					log.Printf("verifyTask: matched by title/description -> ID=%d ExternalID=%s Title=%s", tasks[i].ID, tasks[i].ExternalID, tasks[i].Title)
+					foundTask = &tasks[i]
+					break
+				}
+			}
+		}
+
+		if foundTask == nil {
+			b.handleVerificationFailure(v, "Задача не найдена в Yougile")
+			return
+		}
 	}
 
 	// Проверяем корректность данных
@@ -72,6 +111,35 @@ func (b *Bot) verifyTask(v *TaskVerification) {
 		if !verifyTaskAttachments(foundTask) {
 			b.handleVerificationFailure(v, "Отсутствует или некорректно загружено изображение")
 			return
+		}
+	}
+
+	// Если мы дошли до этого места — верификация успешна. Уведомим отправителя и админов.
+	// Сформируем идентификатор задачи для отображения (ExternalID предпочтительнее)
+	taskIDStr := ""
+	if foundTask.ExternalID != "" {
+		taskIDStr = foundTask.ExternalID
+	} else if foundTask.ID != 0 {
+		taskIDStr = strconv.FormatInt(foundTask.ID, 10)
+	}
+
+	successMsg := fmt.Sprintf("✅ Задача успешно создана в Yougile:\n📎 %s\n🆔 %s", foundTask.Title, taskIDStr)
+	if _, err := b.bot.Send(&telebot.User{ID: v.OriginalSender.TelegramID}, successMsg); err != nil {
+		log.Printf("verifyTask: ошибка отправки подтверждения отправителю %d: %v", v.OriginalSender.TelegramID, err)
+	}
+
+	// Уведомим администраторов краткой заметкой
+	adminNote := fmt.Sprintf("Пользователь %s %s создал задачу: %s (ID: %s)", v.OriginalSender.FirstName, v.OriginalSender.LastName, foundTask.Title, taskIDStr)
+	users := b.storage.GetUsers()
+	for _, user := range users {
+		if user.Role == models.RoleAdmin {
+			// Don't notify the original sender twice if they are also an admin
+			if user.TelegramID == v.OriginalSender.TelegramID {
+				continue
+			}
+			if _, err := b.bot.Send(&telebot.User{ID: user.TelegramID}, adminNote); err != nil {
+				log.Printf("verifyTask: ошибка отправки уведомления администратору %d: %v", user.TelegramID, err)
+			}
 		}
 	}
 }
@@ -110,6 +178,11 @@ func (b *Bot) handleVerificationFailure(v *TaskVerification, reason string) {
 		// Первая попытка не удалась, создаем новую задачу
 		newTask := v.OriginalTask
 		newTask.Title = fmt.Sprintf("%s (повторно исправлено)", newTask.Title)
+		// ensure column is present for recreation
+		if newTask.ColumnID == "" {
+			newTask.ColumnID = b.defaultColumn
+		}
+		// we intentionally do not set Assigned here
 
 		err := b.yougileClient.CreateTask(&newTask)
 		if err != nil {
@@ -123,7 +196,12 @@ func (b *Bot) handleVerificationFailure(v *TaskVerification, reason string) {
 				ID:   fmt.Sprintf("retry_%d", time.Now().Unix()),
 				Type: models.AttachmentTypeImage,
 			}
-			err = b.yougileClient.UploadAttachment(newTask.ID, attachment, v.ImageData)
+			// choose id string
+			taskIDStr := newTask.ExternalID
+			if taskIDStr == "" {
+				taskIDStr = strconv.FormatInt(newTask.ID, 10)
+			}
+			err = b.yougileClient.UploadAttachment(taskIDStr, attachment, v.ImageData)
 			if err != nil {
 				b.notifyError(v, fmt.Sprintf("Ошибка при повторной загрузке изображения: %v", err))
 				return

@@ -4,6 +4,7 @@ package bot
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"yougile_bot4/internal/models"
@@ -72,9 +73,17 @@ func (b *Bot) handleSelectUser(c telebot.Context) error {
 	if !exists || admin.Role != models.RoleAdmin {
 		return c.Send("Эта команда доступна только администраторам.")
 	}
+	// Callback.Data может приходить в виде "select_user|<id>" или просто "<id>".
+	raw := c.Callback().Data
+	parts := strings.Split(raw, "|")
+	var idStr string
+	if len(parts) >= 2 {
+		idStr = parts[len(parts)-1]
+	} else {
+		idStr = raw
+	}
 
-	userID := c.Callback().Data
-	user, exists := b.storage.GetUser(stringToInt64(userID))
+	user, exists := b.storage.GetUser(stringToInt64(idStr))
 	if !exists {
 		return c.Send("Пользователь не найден.")
 	}
@@ -102,14 +111,23 @@ func (b *Bot) handleSelectUser(c telebot.Context) error {
 		user.Role,
 		getApprovalStatus(user.Approved))
 
-	// Настраиваем кнопки управления
-	userManageMenu.Reply(
-		userManageMenu.Row(btnEditRole),
-		userManageMenu.Row(btnEditAddress, btnEditName),
-		userManageMenu.Row(btnBack),
+	// Формируем inline-клавиатуру для управления выбранным пользователем
+	menu := &telebot.ReplyMarkup{}
+	menu.Inline()
+
+	idStr = fmt.Sprint(user.TelegramID)
+	btnEditRoleInline := menu.Data("👑 Изменить роль", "edit_role", idStr)
+	btnEditAddressInline := menu.Data("🏠 Изменить адрес", "edit_address", idStr)
+	btnEditNameInline := menu.Data("📝 Изменить имя", "edit_name", idStr)
+	btnBackInline := menu.Data("⬅️ Назад", "back")
+
+	menu.Inline(
+		menu.Row(btnEditRoleInline),
+		menu.Row(btnEditAddressInline, btnEditNameInline),
+		menu.Row(btnBackInline),
 	)
 
-	return c.Edit(msg, userManageMenu)
+	return c.Edit(msg, menu)
 }
 
 // handleEditRole обрабатывает изменение роли пользователя

@@ -29,3 +29,17 @@ func (s *Storage) HasAdmins() bool {
 	}
 	return false
 }
+
+// DeleteUser удаляет пользователя из хранилища по TelegramID.
+func (s *Storage) DeleteUser(telegramID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if u, ok := s.users[telegramID]; ok {
+		if u.Username != "" {
+			delete(s.usersByUsername, u.Username)
+		}
+		delete(s.users, telegramID)
+		s.isDirty = true
+	}
+}

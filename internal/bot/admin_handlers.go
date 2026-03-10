@@ -39,11 +39,18 @@ func (b *Bot) handleAdminActions(c telebot.Context) error {
 	}
 
 	menu := &telebot.ReplyMarkup{ResizeKeyboard: true}
-	menu.Reply(
-		menu.Row(btnPromoteAdmin),
-		menu.Row(btnDemoteAdmin),
-		menu.Row(btnBack),
-	)
+
+	// Создаем Reply-кнопки (не Inline!)
+	btnPromoteAdmin := telebot.ReplyButton{Text: "Повысить до админа"}
+	btnDemoteAdmin := telebot.ReplyButton{Text: "Понизить админа"}
+	btnBack := telebot.ReplyButton{Text: "Назад"}
+
+	// Собираем Reply-клавиатуру
+	menu.ReplyKeyboard = [][]telebot.ReplyButton{
+		{btnPromoteAdmin},
+		{btnDemoteAdmin},
+		{btnBack},
+	}
 
 	return c.Send("Выберите действие:", menu)
 }
@@ -186,4 +193,74 @@ func (b *Bot) handleDemoteAdmin(c telebot.Context) error {
 
 	return c.Send(fmt.Sprintf("С пользователя %s %s сняты права администратора.",
 		targetUser.FirstName, targetUser.LastName))
+}
+
+// handleMakeAdminCallback обрабатывает callback для назначения администратора (callback формат: make_admin|<id>)
+func (b *Bot) handleMakeAdminCallback(c telebot.Context) error {
+	sender, exists := b.storage.GetUser(c.Sender().ID)
+	if !exists || sender.Role != models.RoleAdmin {
+		return c.Send("Эта команда доступна только администраторам.")
+	}
+
+	raw := c.Callback().Data
+	parts := strings.Split(raw, "|")
+	idStr := parts[len(parts)-1]
+	targetID := stringToInt64(idStr)
+
+	targetUser, exists := b.storage.GetUser(targetID)
+	if !exists {
+		return c.Send("Пользователь не найден.")
+	}
+
+	if targetUser.Role == models.RoleAdmin {
+		return c.Send(fmt.Sprintf("Пользователь %s %s уже является администратором.", targetUser.FirstName, targetUser.LastName))
+	}
+
+	targetUser.Role = models.RoleAdmin
+	b.storage.UpdateUser(targetUser)
+	if err := b.storage.SaveData(); err != nil {
+		log.Printf("Ошибка сохранения данных при повышении: %v", err)
+		return c.Send("Произошла ошибка при сохранении изменений.")
+	}
+
+	if _, err := b.bot.Send(&telebot.User{ID: targetID}, "Вам были предоставлены права администратора."); err != nil {
+		log.Printf("Ошибка отправки уведомления пользователю %d: %v", targetID, err)
+	}
+
+	return c.Send(fmt.Sprintf("Пользователь %s %s назначен администратором.", targetUser.FirstName, targetUser.LastName))
+}
+
+// handleMakeUserCallback обрабатывает callback для понижения пользователя (callback формат: make_user|<id>)
+func (b *Bot) handleMakeUserCallback(c telebot.Context) error {
+	sender, exists := b.storage.GetUser(c.Sender().ID)
+	if !exists || sender.Role != models.RoleAdmin {
+		return c.Send("Эта команда доступна только администраторам.")
+	}
+
+	raw := c.Callback().Data
+	parts := strings.Split(raw, "|")
+	idStr := parts[len(parts)-1]
+	targetID := stringToInt64(idStr)
+
+	targetUser, exists := b.storage.GetUser(targetID)
+	if !exists {
+		return c.Send("Пользователь не найден.")
+	}
+
+	if targetUser.Role != models.RoleAdmin {
+		return c.Send(fmt.Sprintf("Пользователь %s %s не является администратором.", targetUser.FirstName, targetUser.LastName))
+	}
+
+	targetUser.Role = models.RoleUser
+	b.storage.UpdateUser(targetUser)
+	if err := b.storage.SaveData(); err != nil {
+		log.Printf("Ошибка сохранения данных при понижении: %v", err)
+		return c.Send("Произошла ошибка при сохранении изменений.")
+	}
+
+	if _, err := b.bot.Send(&telebot.User{ID: targetID}, "С вас были сняты права администратора."); err != nil {
+		log.Printf("Ошибка отправки уведомления пользователю %d: %v", targetID, err)
+	}
+
+	return c.Send(fmt.Sprintf("С пользователя %s %s сняты права администратора.", targetUser.FirstName, targetUser.LastName))
 }

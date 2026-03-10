@@ -54,7 +54,11 @@ type Comment struct {
 // Task представляет задачу в системе Yougile.
 // Включает поля метаданных, статуса, оценок и комментариев.
 type Task struct {
-	ID          int64      `json:"id"`
+	ID int64 `json:"id"`
+	// ExternalID содержит строковый идентификатор задачи, если API возвращает UUID/string id.
+	ExternalID string `json:"external_id,omitempty"`
+	// Key содержит короткий уникальный ключ задачи (например ITS-2904), если API его возвращает.
+	Key         string     `json:"key,omitempty"`
 	BoardID     string     `json:"board_id"`
 	Title       string     `json:"title"`
 	Description string     `json:"description"`
@@ -66,11 +70,13 @@ type Task struct {
 	DueDate     time.Time  `json:"due_date,omitempty"`
 	Priority    int        `json:"priority"`
 	Assignee    string     `json:"assignee,omitempty"`
-	Labels      []string   `json:"labels,omitempty"`
-	Estimate    float64    `json:"estimate,omitempty"`   // оценка в часах
-	TimeSpent   float64    `json:"time_spent,omitempty"` // затраченное время в часах
-	Comments    []Comment  `json:"comments,omitempty"`
-	Attachments []string   `json:"attachments,omitempty"` // URLs вложений
+	// ColumnID — идентификатор колонки (columnId) для создания/перемещения задачи.
+	ColumnID    string    `json:"columnId,omitempty"`
+	Labels      []string  `json:"labels,omitempty"`
+	Estimate    float64   `json:"estimate,omitempty"`   // оценка в часах
+	TimeSpent   float64   `json:"time_spent,omitempty"` // затраченное время в часах
+	Comments    []Comment `json:"comments,omitempty"`
+	Attachments []string  `json:"attachments,omitempty"` // URLs вложений
 }
 
 // UserRole определяет роль пользователя в системе (админ или пользователь).
