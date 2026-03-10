@@ -469,11 +469,8 @@ func (c *Client) GetTasks(limit int) ([]models.Task, error) {
 
 // CreateTask создает новую задачу
 func (c *Client) CreateTask(task *models.Task) error {
-	// Prefer board-scoped create endpoint when boardID is configured (some instances require it)
+	// Use the general tasks endpoint for creation and pass boardId explicitly.
 	reqURL := fmt.Sprintf("%s/api-v2/tasks", c.baseURL)
-	if c.boardID != "" {
-		reqURL = fmt.Sprintf("%s/api-v2/board/%s/tasks", c.baseURL, url.PathEscape(c.boardID))
-	}
 	// Build payload following CreateTaskDto from OpenAPI
 	payload := make(map[string]interface{})
 	// title is required by API
@@ -483,6 +480,9 @@ func (c *Client) CreateTask(task *models.Task) error {
 	}
 	if task.ColumnID != "" {
 		payload["columnId"] = task.ColumnID
+	}
+	if c.boardID != "" {
+		payload["boardId"] = c.boardID
 	}
 	// assigned is intentionally not sent by the bot when creating tasks
 	if !task.DueDate.IsZero() {
