@@ -21,8 +21,13 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// defaultScanRange используется при поиске пронумерованных ITS-ключей
+// defaultScanRange используется при поиске пронумерованных ключей задач
 var defaultScanRange = 20
+
+// defaultScanKeyPrefix — префикс коротких номерных ключей задач (idTaskProject в Yougile),
+// например "ID" даёт ключи вида "ID-2990". Префикс специфичен для конкретного проекта/доски
+// в Yougile и переопределяется через YOUGILE_KEY_PREFIX.
+var defaultScanKeyPrefix = "ID"
 
 func init() {
 	// Загружаем переменные из .env файла
@@ -143,11 +148,14 @@ func main() {
 		yougileClient.SetColumnID(col)
 	}
 
-	// scan range for numeric ITS keys (default 20)
+	// scan range for numeric task keys (default 20)
 	if sr := os.Getenv("YOUGILE_SCAN_RANGE"); sr != "" {
 		if v, err := strconv.Atoi(sr); err == nil && v > 0 {
 			defaultScanRange = v
 		}
+	}
+	if kp := os.Getenv("YOUGILE_KEY_PREFIX"); kp != "" {
+		defaultScanKeyPrefix = kp
 	}
 
 	// Создание и запуск бота
@@ -159,7 +167,7 @@ func main() {
 	telegramBot, err := bot.NewBot(
 		config.TelegramToken,
 		store,
-		config.YougileToken,
+		yougileClient,
 		boardID,
 		config.RegTimeout,
 		config.MinMsgLen,
@@ -311,7 +319,7 @@ func checkNewTasks(ctx context.Context, client *api.Client, store *storage.Stora
 				}
 				newCount++
 				if !task.Done {
-					bot.SendNotification(formatTaskNotification(task))
+					bot.SendNotification(models.FormatTaskNotification(task))
 					notifyCount++
 				}
 			}
@@ -320,90 +328,23 @@ func checkNewTasks(ctx context.Context, client *api.Client, store *storage.Stora
 			log.Printf("checkNewTasks: новых задач %d, уведомлений %d", newCount, notifyCount)
 		}
 	}
-
-	// formatTaskNotification формирует текст уведомления о новой задаче
-	// Включает в уведомление:
-	// - Статус задачи (✅ - завершена, 🔵 - активна)
-	// - Название задачи
-	// - Приоритет (⚡️ - высокий, ⭐️ - средний, 📌 - обычный)
-	// - Срок выполнения (если установлен)
-	// - Исполнителя (если назначен)
-	// - Описание задачи (первые 200 символов)
 }
 
-func formatTaskNotification(task models.Task) string {
-	var status, priority string
-
-	// Определяем эмодзи статуса задачи
-	if task.Done {
-		status = "✅" // Задача завершена
-	} else {
-		status = "🔵" // Задача активна
-	}
-
-	// Определяем приоритет задачи и соответствующий эмодзи
-	switch task.Priority {
-	case 1:
-		priority = "⚡️ Высокий" // Высокий приоритет
-	case 2:
-		priority = "⭐️ Средний" // Средний приоритет
-	default:
-		priority = "📌 Обычный" // Обычный приоритет (или не указан)
-	}
-
-	// Добавляем информацию о сроке выполнения, если он установлен
-	var dueDate string
-	if !task.DueDate.IsZero() {
-		dueDate = fmt.Sprintf("\n📅 Срок: %s", task.DueDate.Format("02.01.2006"))
-	}
-
-	// Добавляем информацию об исполнителе, если он назначен
-	var assignee string
-	if task.Assignee != "" {
-		assignee = fmt.Sprintf("\n👤 Исполнитель: %s", task.Assignee)
-	}
-
-	// Формируем основной текст уведомления:
-	// - Статус и тип (новая задача)
-	// - Название задачи
-	// - Приоритет
-	// - Срок (если есть)
-	// - Исполнитель (если назначен)
-	msg := fmt.Sprintf("%s Новая задача\n"+
-		"📎 %s\n"+
-		"🏷 %s%s%s",
-		status, task.Title, priority, dueDate, assignee)
-
-	// Добавляем описание задачи, если оно есть
-	// Ограничиваем длину описания 200 символами для читаемости
-	if task.Description != "" {
-		descLen := len(task.Description)
-		if descLen > 200 {
-			descLen = 200
-		}
-		msg += fmt.Sprintf("\n\n📝 %s", task.Description[:descLen])
-		if len(task.Description) > 200 {
-			msg += "..." // Добавляем многоточие, если описание было обрезано
-		}
-	}
-
-	return msg
-}
-
-// scanNumericKeys выполняет быстрый пробег по пронумерованным коротким ключам ITS-N
-// начиная с последнего сохранённого в хранилище значения. Находит задачи через GetTaskByID
-// и уведомляет админов при обнаружении новых.
+// scanNumericKeys выполняет быстрый пробег по пронумерованным коротким ключам вида
+// "<defaultScanKeyPrefix>-N" (например "ID-2990"), начиная с последнего сохранённого
+// в хранилище значения. Находит задачи через GetTaskByID и уведомляет админов при
+// обнаружении новых.
 func scanNumericKeys(client *api.Client, store *storage.Storage, bot *bot.Bot, rng int) {
 	last := store.GetLastScanned()
 	if last < 0 {
 		last = 0
 	}
 	maxScan := last + rng
-	log.Printf("scanNumericKeys: сканирование ITS-%d..ITS-%d", last+1, maxScan)
+	log.Printf("scanNumericKeys: сканирование %s-%d..%s-%d", defaultScanKeyPrefix, last+1, defaultScanKeyPrefix, maxScan)
 	found := 0
 	notified := 0
 	for n := last + 1; n <= maxScan; n++ {
-		key := fmt.Sprintf("ITS-%d", n)
+		key := fmt.Sprintf("%s-%d", defaultScanKeyPrefix, n)
 		t, err := client.GetTaskByIDQuiet(key)
 		if err != nil || t == nil {
 			continue
@@ -422,7 +363,7 @@ func scanNumericKeys(client *api.Client, store *storage.Storage, bot *bot.Bot, r
 			}
 			found++
 			if !t.Done {
-				bot.SendNotification(formatTaskNotification(*t))
+				bot.SendNotification(models.FormatTaskNotification(*t))
 				notified++
 			}
 		}

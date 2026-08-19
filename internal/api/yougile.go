@@ -5,12 +5,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"math/rand"
 	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"net/url"
 	"os"
 	"strconv"
@@ -643,49 +643,36 @@ func (c *Client) UpdateTask(task *models.Task) error {
 	})
 }
 
-// UploadAttachment загружает вложение на сервер
-func (c *Client) UploadAttachment(taskID string, attachment *models.Attachment, data []byte) error {
-	// Start with the general tasks endpoint. If that returns 404 for UUID ids,
-	// we'll try to resolve a numeric id and use the board-scoped path.
-	url := fmt.Sprintf("%s/api-v2/tasks/%s/attachments", c.baseURL, taskID)
-	return c.retryOperation(func() (bool, error) {
-		// build multipart body per attempt (buffer is consumed by request)
+// UploadFile загружает произвольный файл в общее файловое хранилище Yougile
+// (POST /api-v2/upload-file) и возвращает публичный URL загруженного файла.
+//
+// В реальном API Yougile нет понятия "вложение к задаче" — единственный способ связать
+// файл с задачей — вставить возвращённую ссылку в текст задачи или в сообщение чата задачи
+// (см. AddComment/UploadAttachment). Проверено эмпирически на актуальном OpenAPI-спеке
+// (https://ru.yougile.com/api-json): путей /api-v2/tasks/{id}/attachments и
+// /api-v2/board/{id}/tasks/... в API не существует вовсе.
+func (c *Client) UploadFile(filename string, data []byte) (string, error) {
+	reqURL := fmt.Sprintf("%s/api-v2/upload-file", c.baseURL)
+
+	var resultURL string
+	err := c.retryOperation(func() (bool, error) {
 		body := &bytes.Buffer{}
 		writer := multipart.NewWriter(body)
-
-		// Добавляем метаданные
-		metaHeader := textproto.MIMEHeader{}
-		metaHeader.Set("Content-Disposition", `form-data; name="metadata"`)
-		metaHeader.Set("Content-Type", "application/json")
-		metaPart, err := writer.CreatePart(metaHeader)
-		if err != nil {
-			return true, fmt.Errorf("ошибка создания части metadata: %w", err)
-		}
-		if err := json.NewEncoder(metaPart).Encode(attachment); err != nil {
-			return true, fmt.Errorf("ошибка кодирования metadata: %w", err)
-		}
-
-		// Добавляем файл
-		fileHeader := textproto.MIMEHeader{}
-		fileHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, attachment.ID))
-		fileHeader.Set("Content-Type", "application/octet-stream")
-		filePart, err := writer.CreatePart(fileHeader)
+		fw, err := writer.CreateFormFile("file", filename)
 		if err != nil {
 			return true, fmt.Errorf("ошибка создания части file: %w", err)
 		}
-		if _, err := filePart.Write(data); err != nil {
+		if _, err := fw.Write(data); err != nil {
 			return true, fmt.Errorf("ошибка записи файла: %w", err)
 		}
-
 		if err := writer.Close(); err != nil {
 			return true, fmt.Errorf("ошибка закрытия writer: %w", err)
 		}
 
-		req, err := http.NewRequest("POST", url, body)
+		req, err := http.NewRequest("POST", reqURL, body)
 		if err != nil {
 			return true, fmt.Errorf("ошибка создания запроса: %w", err)
 		}
-
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
 		req.Header.Set("Content-Type", writer.FormDataContentType())
 
@@ -696,102 +683,92 @@ func (c *Client) UploadAttachment(taskID string, attachment *models.Attachment, 
 		if resp == nil {
 			return false, fmt.Errorf("пустой ответ от сервера")
 		}
-		if resp.StatusCode == http.StatusCreated {
-			if cerr := resp.Body.Close(); cerr != nil {
-				log.Printf("Ошибка закрытия тела ответа в UploadAttachment: %v", cerr)
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		if cerr := resp.Body.Close(); cerr != nil {
+			log.Printf("Ошибка закрытия тела ответа в UploadFile: %v", cerr)
+		}
+
+		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+			var result struct {
+				Result  string `json:"result"`
+				URL     string `json:"url"`
+				FullURL string `json:"fullUrl"`
 			}
+			if err := json.Unmarshal(bodyBytes, &result); err != nil {
+				return true, fmt.Errorf("не удалось распарсить ответ upload-file: %s", strings.TrimSpace(string(bodyBytes)))
+			}
+			if result.FullURL == "" {
+				return true, fmt.Errorf("upload-file: пустой fullUrl в ответе: %s", strings.TrimSpace(string(bodyBytes)))
+			}
+			resultURL = result.FullURL
 			return true, nil
 		}
-		var bodyBuf bytes.Buffer
-		_, _ = bodyBuf.ReadFrom(resp.Body)
-		if cerr := resp.Body.Close(); cerr != nil {
-			log.Printf("Ошибка закрытия тела ответа в UploadAttachment (error path): %v", cerr)
-		}
-
-		// If we got 404 for tasks/{uuid}/attachments, some instances require a numeric ID and board-scoped path.
-		if resp.StatusCode == http.StatusNotFound && strings.Contains(taskID, "-") {
-			// try to resolve numeric ID by ExternalID via GetTasks
-			if numeric, rerr := c.resolveNumericIDFromExternal(taskID); rerr == nil && numeric != 0 {
-				// retry using board-scoped path with numeric id
-				boardURL := fmt.Sprintf("%s/api-v2/board/%s/tasks/%d/attachments", c.baseURL, c.boardID, numeric)
-
-				// Rebuild multipart body for retry (don't reuse previous writer/buffer)
-				body2 := &bytes.Buffer{}
-				writer2 := multipart.NewWriter(body2)
-
-				// metadata part
-				metaHeader2 := textproto.MIMEHeader{}
-				metaHeader2.Set("Content-Disposition", `form-data; name="metadata"`)
-				metaHeader2.Set("Content-Type", "application/json")
-				metaPart2, merr := writer2.CreatePart(metaHeader2)
-				if merr != nil {
-					return true, fmt.Errorf("ошибка создания части metadata (retry): %w", merr)
-				}
-				if merr := json.NewEncoder(metaPart2).Encode(attachment); merr != nil {
-					return true, fmt.Errorf("ошибка кодирования metadata (retry): %w", merr)
-				}
-
-				// file part
-				fileHeader2 := textproto.MIMEHeader{}
-				fileHeader2.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, attachment.ID))
-				fileHeader2.Set("Content-Type", "application/octet-stream")
-				filePart2, ferr := writer2.CreatePart(fileHeader2)
-				if ferr != nil {
-					return true, fmt.Errorf("ошибка создания части file (retry): %w", ferr)
-				}
-				if _, ferr := filePart2.Write(data); ferr != nil {
-					return true, fmt.Errorf("ошибка записи файла (retry): %w", ferr)
-				}
-
-				if cerr := writer2.Close(); cerr != nil {
-					return true, fmt.Errorf("ошибка закрытия writer (retry): %w", cerr)
-				}
-
-				rreq, rerr := http.NewRequest("POST", boardURL, body2)
-				if rerr != nil {
-					return true, fmt.Errorf("ошибка создания повторного запроса: %w", rerr)
-				}
-				rreq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
-				rreq.Header.Set("Content-Type", writer2.FormDataContentType())
-
-				rresp, rerr := c.httpClient.Do(rreq)
-				if rerr != nil {
-					return false, fmt.Errorf("ошибка выполнения повторного запроса: %w", rerr)
-				}
-				if rresp != nil && rresp.StatusCode == http.StatusCreated {
-					if cerr := rresp.Body.Close(); cerr != nil {
-						log.Printf("Ошибка закрытия тела ответа в UploadAttachment (retry): %v", cerr)
-					}
-					return true, nil
-				}
-				if rresp != nil {
-					var rb bytes.Buffer
-					_, _ = rb.ReadFrom(rresp.Body)
-					if cerr := rresp.Body.Close(); cerr != nil {
-						log.Printf("Ошибка закрытия тела ответа в UploadAttachment (retry error): %v", cerr)
-					}
-					return true, fmt.Errorf("неверный код ответа при retry: %d, body: %s", rresp.StatusCode, rb.String())
-				}
-			}
-		}
-
 		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
-			return false, fmt.Errorf("неверный код ответа (повторяем): %d, body: %s", resp.StatusCode, bodyBuf.String())
+			return false, fmt.Errorf("upload-file: неверный код ответа (повторяем): %d", resp.StatusCode)
 		}
-		return true, fmt.Errorf("неверный код ответа: %d, body: %s", resp.StatusCode, bodyBuf.String())
+		return true, fmt.Errorf("upload-file: неверный код ответа: %d, тело: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	})
+
+	return resultURL, err
 }
 
-// AddComment добавляет комментарий к задаче
-func (c *Client) AddComment(taskID string, comment *models.Comment) error {
-	url := fmt.Sprintf("%s/api-v2/tasks/%s/comments", c.baseURL, taskID)
-	data, err := json.Marshal(comment)
+// UploadAttachment загружает изображение/файл в Yougile и прикрепляет его к задаче,
+// публикуя сообщение в чате задачи со встроенной картинкой (см. UploadFile и AddComment).
+func (c *Client) UploadAttachment(taskID string, attachment *models.Attachment, data []byte) error {
+	fullURL, err := c.UploadFile(attachment.ID, data)
 	if err != nil {
-		return fmt.Errorf("ошибка сериализации комментария: %w", err)
+		return fmt.Errorf("ошибка загрузки файла: %w", err)
+	}
+	attachment.URL = fullURL
+
+	comment := &models.Comment{Attachments: []models.Attachment{*attachment}}
+	return c.AddComment(taskID, comment)
+}
+
+// chatMessagePayload соответствует CreateChatMessageDto реального API Yougile.
+type chatMessagePayload struct {
+	Text     string `json:"text"`
+	TextHTML string `json:"textHtml"`
+	Label    string `json:"label"`
+}
+
+// AddComment публикует сообщение в чате задачи — это и есть "комментарий" в терминах Yougile.
+//
+// Реальный эндпоинт — POST /api-v2/chats/{chatId}/messages, а не /api-v2/tasks/{id}/comments
+// (последнего в API не существует). chatId для задачи совпадает с её собственным id —
+// проверено эмпирически прямым запросом к рабочему инстансу (задача существует,
+// GET /api-v2/chats/{taskId}/messages возвращает 200 с историей сообщений этой задачи).
+// Вложения с непустым URL встраиваются в HTML-версию сообщения как <img>.
+func (c *Client) AddComment(taskID string, comment *models.Comment) error {
+	reqURL := fmt.Sprintf("%s/api-v2/chats/%s/messages", c.baseURL, url.PathEscape(taskID))
+
+	textHTML := strings.ReplaceAll(html.EscapeString(comment.Text), "\n", "<br>")
+	for _, a := range comment.Attachments {
+		if a.URL == "" {
+			continue
+		}
+		textHTML += fmt.Sprintf(`<br><img src="%s" style="max-width:100%%">`, html.EscapeString(a.URL))
+	}
+	if textHTML == "" {
+		textHTML = "&nbsp;"
+	}
+	text := comment.Text
+	if text == "" {
+		for _, a := range comment.Attachments {
+			if a.URL != "" {
+				text = a.URL
+				break
+			}
+		}
+	}
+
+	data, err := json.Marshal(chatMessagePayload{Text: text, TextHTML: textHTML, Label: ""})
+	if err != nil {
+		return fmt.Errorf("ошибка сериализации сообщения: %w", err)
 	}
 
 	return c.retryOperation(func() (bool, error) {
-		req, err := http.NewRequest("POST", url, bytes.NewReader(data))
+		req, err := http.NewRequest("POST", reqURL, bytes.NewReader(data))
 		if err != nil {
 			return true, fmt.Errorf("ошибка создания запроса: %w", err)
 		}
@@ -805,70 +782,18 @@ func (c *Client) AddComment(taskID string, comment *models.Comment) error {
 		if resp == nil {
 			return false, fmt.Errorf("пустой ответ от сервера")
 		}
-		var bodyBuf bytes.Buffer
-		_, _ = bodyBuf.ReadFrom(resp.Body)
+		bodyBytes, _ := io.ReadAll(resp.Body)
 		if cerr := resp.Body.Close(); cerr != nil {
 			log.Printf("Ошибка закрытия тела ответа в AddComment: %v", cerr)
 		}
 		if resp.StatusCode == http.StatusCreated {
 			return true, nil
 		}
-
-		// If comment endpoint with UUID returned 404, try resolve numeric id and post to board-scoped path
-		if resp.StatusCode == http.StatusNotFound && strings.Contains(taskID, "-") {
-			if numeric, rerr := c.resolveNumericIDFromExternal(taskID); rerr == nil && numeric != 0 {
-				boardURL := fmt.Sprintf("%s/api-v2/board/%s/tasks/%d/comments", c.baseURL, c.boardID, numeric)
-				rreq, rerr := http.NewRequest("POST", boardURL, bytes.NewReader(data))
-				if rerr != nil {
-					return true, fmt.Errorf("ошибка создания повторного запроса: %w", rerr)
-				}
-				rreq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
-				rreq.Header.Set("Content-Type", "application/json")
-				rresp, rerr := c.httpClient.Do(rreq)
-				if rerr != nil {
-					return false, fmt.Errorf("ошибка выполнения повторного запроса: %w", rerr)
-				}
-				if rresp != nil && rresp.StatusCode == http.StatusCreated {
-					if cerr := rresp.Body.Close(); cerr != nil {
-						log.Printf("Ошибка закрытия тела ответа в AddComment (retry): %v", cerr)
-					}
-					return true, nil
-				}
-				if rresp != nil {
-					var rb bytes.Buffer
-					_, _ = rb.ReadFrom(rresp.Body)
-					if cerr := rresp.Body.Close(); cerr != nil {
-						log.Printf("Ошибка закрытия тела ответа в AddComment (retry error): %v", cerr)
-					}
-					return true, fmt.Errorf("неверный код ответа при retry: %d, body: %s", rresp.StatusCode, rb.String())
-				}
-			}
-		}
 		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
 			return false, fmt.Errorf("неверный код ответа (повторяем): %d", resp.StatusCode)
 		}
-		return true, fmt.Errorf("неверный код ответа: %d", resp.StatusCode)
+		return true, fmt.Errorf("неверный код ответа: %d, тело: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	})
-}
-
-// resolveNumericIDFromExternal пытается найти числовой ID задачи по её строковому ExternalID (UUID).
-// Возвращает numeric ID или ошибку.
-func (c *Client) resolveNumericIDFromExternal(external string) (int64, error) {
-	// Попробуем получить последние задачи (ограничение небольшое)
-	tasks, err := c.GetTasks(200)
-	if err != nil {
-		return 0, fmt.Errorf("ошибка получения задач для разрешения внешнего id: %w", err)
-	}
-	for _, t := range tasks {
-		if t.ExternalID == external {
-			return t.ID, nil
-		}
-		// также сравним с полем id в виде строки на случай, если API вернул id в data
-		if fmt.Sprintf("%d", t.ID) == external {
-			return t.ID, nil
-		}
-	}
-	return 0, fmt.Errorf("не найден numeric id для external id: %s", external)
 }
 
 // GetTaskByID получает одну задачу по строковому ID (может быть UUID или numeric string).
@@ -922,8 +847,9 @@ func (c *Client) getTaskByID(id string, quiet bool) (*models.Task, error) {
 			}
 		}
 		if resp.StatusCode == http.StatusOK {
-			// Save successful GetTaskByID body for inspection (best-effort)
-			if len(body) > 0 {
+			// Save successful GetTaskByID body for inspection (best-effort, only when verbose logging is on
+			// to avoid flooding logs/ with one file per request — this previously accumulated thousands of files).
+			if c.verbose && len(body) > 0 {
 				fname := fmt.Sprintf("logs/yougile_gettaskbyid_%d.json", time.Now().Unix())
 				if werr := os.WriteFile(fname, body, 0644); werr == nil {
 					log.Printf("GetTaskByID: saved response body to %s", fname)

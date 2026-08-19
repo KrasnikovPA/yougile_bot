@@ -12,18 +12,34 @@ import (
 	"yougile_bot4/internal/models"
 )
 
-// Тест проверяет, что UploadAttachment делает retry при 500 и успешно завершается при 201
+// Тест проверяет, что UploadAttachment (upload-file + сообщение в чате задачи) делает retry
+// при 500 на каждом из двух реальных запросов и успешно завершается при успешном ответе.
 func TestUploadAttachmentRetries(t *testing.T) {
-	calls := 0
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls++
-		if calls == 1 {
-			http.Error(w, "server error", http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusCreated)
-		if _, err := io.WriteString(w, `{"data": {"id": 123}}`); err != nil {
-			t.Fatalf("Ошибка записи тела ответа в тесте: %v", err)
+	uploadCalls, chatCalls := 0, 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api-v2/upload-file":
+			uploadCalls++
+			if uploadCalls == 1 {
+				http.Error(w, "server error", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			if _, err := io.WriteString(w, `{"result":"ok","url":"/f.png","fullUrl":"https://example.com/f.png"}`); err != nil {
+				t.Fatalf("Ошибка записи тела ответа в тесте: %v", err)
+			}
+		case r.URL.Path == "/api-v2/chats/1/messages":
+			chatCalls++
+			if chatCalls == 1 {
+				http.Error(w, "server error", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			if _, err := io.WriteString(w, `{"id": 123}`); err != nil {
+				t.Fatalf("Ошибка записи тела ответа в тесте: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected request path: %s", r.URL.Path)
 		}
 	}))
 	defer ts.Close()
@@ -40,8 +56,14 @@ func TestUploadAttachmentRetries(t *testing.T) {
 	if err := c.UploadAttachment("1", attachment, data); err != nil {
 		t.Fatalf("expected success, got error: %v", err)
 	}
+	if attachment.URL != "https://example.com/f.png" {
+		t.Fatalf("expected attachment.URL to be set from upload-file response, got %q", attachment.URL)
+	}
 
-	if calls < 2 {
-		t.Fatalf("expected at least 2 calls, got %d", calls)
+	if uploadCalls < 2 {
+		t.Fatalf("expected at least 2 upload-file calls, got %d", uploadCalls)
+	}
+	if chatCalls < 2 {
+		t.Fatalf("expected at least 2 chat message calls, got %d", chatCalls)
 	}
 }
