@@ -14,7 +14,7 @@ import (
 func TestCreateTaskParsesID(t *testing.T) {
 	// mock server
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/api-v2/board/1/tasks" {
+		if r.Method == "POST" && r.URL.Path == "/api-v2/tasks" {
 			w.WriteHeader(http.StatusCreated)
 			resp := map[string]interface{}{"data": map[string]interface{}{"id": 777}}
 			_ = json.NewEncoder(w).Encode(resp)
