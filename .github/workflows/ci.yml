@@ -12,7 +12,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        go-version: [1.20.x, 1.21.x]
+        go-version: [1.21.x]
 
     steps:
       - name: Checkout
@@ -46,7 +46,7 @@ jobs:
         uses: golangci/golangci-lint-action@v4
         with:
           version: v1.59.0
-          args: run ./...
+          args: ./...
         continue-on-error: true
 
       - name: Add lint-failed label and comment on PR
@@ -60,14 +60,14 @@ jobs:
             const repo = context.repo.repo;
             // Add label (will create if it doesn't exist)
             try {
-              await github.issues.addLabels({ owner, repo, issue_number: pr.number, labels: ['lint-failed'] });
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pr.number, labels: ['lint-failed'] });
             } catch (e) {
               console.warn(`Failed to add label: ${e}`);
             }
             // Post a comment with link to workflow run
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
             const body = `golangci-lint обнаружил проблемы при проверке кода. Пожалуйста, исправьте замечания и запушьте изменения. Подробности: ${runUrl}`;
-            await github.issues.createComment({ owner, repo, issue_number: pr.number, body });
+            await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body });
 
       - name: Remove lint-failed label if lint passed
         if: ${{ steps.golangci.outcome == 'success' && github.event_name == 'pull_request' }}
@@ -79,7 +79,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             try {
-              await github.issues.removeLabel({ owner, repo, issue_number: pr.number, name: 'lint-failed' });
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: pr.number, name: 'lint-failed' });
             } catch (e) {
               // ignore if label missing
             }

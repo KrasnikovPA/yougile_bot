@@ -2,7 +2,10 @@
 // задачи, пользователи, комментарии и конфигурация.
 package models
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // TaskStatus представляет статус задачи.
 // Возможные значения определены константами ниже (TaskStatusNew, TaskStatusInWork и т.д.).
@@ -147,4 +150,54 @@ type Config struct {
 	RetryCount      int
 	RetryWait       time.Duration
 	MaxRetryElapsed time.Duration
+}
+
+// FormatTaskNotification формирует текст уведомления о задаче для отправки в Telegram.
+// Используется как фоновым опросом (main.go), так и обработчиками бота, чтобы уведомления
+// выглядели одинаково независимо от того, что именно обнаружило задачу.
+func FormatTaskNotification(task Task) string {
+	var status, priority string
+
+	if task.Done {
+		status = "✅"
+	} else {
+		status = "🔵"
+	}
+
+	switch task.Priority {
+	case 1:
+		priority = "⚡️ Высокий"
+	case 2:
+		priority = "⭐️ Средний"
+	default:
+		priority = "📌 Обычный"
+	}
+
+	var dueDate string
+	if !task.DueDate.IsZero() {
+		dueDate = fmt.Sprintf("\n📅 Срок: %s", task.DueDate.Format("02.01.2006"))
+	}
+
+	var assignee string
+	if task.Assignee != "" {
+		assignee = fmt.Sprintf("\n👤 Исполнитель: %s", task.Assignee)
+	}
+
+	msg := fmt.Sprintf("%s Новая задача\n"+
+		"📎 %s\n"+
+		"🏷 %s%s%s",
+		status, task.Title, priority, dueDate, assignee)
+
+	if task.Description != "" {
+		descLen := len(task.Description)
+		if descLen > 200 {
+			descLen = 200
+		}
+		msg += fmt.Sprintf("\n\n📝 %s", task.Description[:descLen])
+		if len(task.Description) > 200 {
+			msg += "..."
+		}
+	}
+
+	return msg
 }

@@ -52,7 +52,7 @@ func NewStorage(knownTasksFile, chatIDsFile, usersFile, tasksFile, templatesFile
 		usersFile:       usersFile,
 		templatesFile:   templatesFile,
 		metrics:         m,
-		lastScannedFile: "data/scan_state.json",
+		lastScannedFile: filepath.Join(filepath.Dir(knownTasksFile), "scan_state.json"),
 	}
 
 	if err := s.loadData(); err != nil {

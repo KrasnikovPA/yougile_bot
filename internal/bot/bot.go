@@ -72,6 +72,7 @@ type Bot struct {
 	adminActions       map[int64]*AdminAction              // состояния действий администратора
 	adminUserStates    map[int64]*AdminUserState           // состояния управления пользователями
 	defaultColumn      string
+	scanKeyPrefix      string // префикс коротких номерных ключей задач, напр. "ID" -> "ID-2990"
 	// full scan control
 	fullScanCancel  context.CancelFunc
 	fullScanMu      sync.Mutex
@@ -79,7 +80,10 @@ type Bot struct {
 }
 
 // NewBot создает и настраивает экземпляр Bot, регистрирует обработчики команд.
-func NewBot(token string, storage *storage.Storage, yougileToken string, boardID string, regTimeout time.Duration, minMsgLen int, metrics *metrics.Metrics) (*Bot, error) {
+// yougileClient должен быть тем же самым клиентом, что использует фоновый опрос задач
+// (см. main.go), чтобы политика повторов и фильтр по columnId не расходились между
+// автоматическим поллером и командами бота.
+func NewBot(token string, storage *storage.Storage, yougileClient *api.Client, boardID string, regTimeout time.Duration, minMsgLen int, metrics *metrics.Metrics) (*Bot, error) {
 	b, err := telebot.NewBot(telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -87,8 +91,6 @@ func NewBot(token string, storage *storage.Storage, yougileToken string, boardID
 	if err != nil {
 		return nil, fmt.Errorf("ошибка создания бота: %w", err)
 	}
-
-	yougileClient := api.NewClient(yougileToken, boardID, 30*time.Second, metrics)
 
 	bot := &Bot{
 		bot:                b,
@@ -108,6 +110,7 @@ func NewBot(token string, storage *storage.Storage, yougileToken string, boardID
 		timeStates:         make(map[int64]int64),
 		adminUserStates:    make(map[int64]*AdminUserState),
 		defaultColumn:      os.Getenv("COLUMN_ID"),
+		scanKeyPrefix:      scanKeyPrefixFromEnv(),
 	}
 
 	// Настраиваем клавиатуру для основного меню
@@ -229,52 +232,10 @@ func (b *Bot) RescanTasks(limit int) error {
 	return nil
 }
 
-// formatTaskNotification формирует текст уведомления о задаче (аналогично реализации в main).
+// formatTaskNotification формирует текст уведомления о задаче через общую функцию models,
+// используемую также фоновым опросом в main.go.
 func (b *Bot) formatTaskNotification(task models.Task) string {
-	var status, priority string
-
-	if task.Done {
-		status = "✅"
-	} else {
-		status = "🔵"
-	}
-
-	switch task.Priority {
-	case 1:
-		priority = "⚡️ Высокий"
-	case 2:
-		priority = "⭐️ Средний"
-	default:
-		priority = "📌 Обычный"
-	}
-
-	var dueDate string
-	if !task.DueDate.IsZero() {
-		dueDate = fmt.Sprintf("\n📅 Срок: %s", task.DueDate.Format("02.01.2006"))
-	}
-
-	var assignee string
-	if task.Assignee != "" {
-		assignee = fmt.Sprintf("\n👤 Исполнитель: %s", task.Assignee)
-	}
-
-	msg := fmt.Sprintf("%s Новая задача\n"+
-		"📎 %s\n"+
-		"🏷 %s%s%s",
-		status, task.Title, priority, dueDate, assignee)
-
-	if task.Description != "" {
-		descLen := len(task.Description)
-		if descLen > 200 {
-			descLen = 200
-		}
-		msg += fmt.Sprintf("\n\n📝 %s", task.Description[:descLen])
-		if len(task.Description) > 200 {
-			msg += "..."
-		}
-	}
-
-	return msg
+	return models.FormatTaskNotification(task)
 }
 
 // setupHandlers настраивает обработчики команд
@@ -967,7 +928,18 @@ func (b *Bot) stopFullScan() error {
 	return nil
 }
 
-// fullScanLoop выполняет последовательные вызовы GetTaskByID для ITS-N с динамическим throttle.
+// scanKeyPrefixFromEnv возвращает префикс коротких номерных ключей задач (idTaskProject
+// в Yougile, например "ID" даёт ключи вида "ID-2990"). Префикс специфичен для конкретного
+// проекта/доски и переопределяется через YOUGILE_KEY_PREFIX; по умолчанию "ID".
+func scanKeyPrefixFromEnv() string {
+	if p := os.Getenv("YOUGILE_KEY_PREFIX"); p != "" {
+		return p
+	}
+	return "ID"
+}
+
+// fullScanLoop выполняет последовательные вызовы GetTaskByID для номерных ключей задач
+// (см. scanKeyPrefix) с динамическим throttle.
 // Поведение: пока находятся новые задачи — 1 запрос в секунду; если в течение 1 минуты новых задач нет — 1 запрос в минуту.
 func (b *Bot) fullScanLoop(ctx context.Context, rng int) {
 	defer func() {
@@ -995,7 +967,7 @@ func (b *Bot) fullScanLoop(ctx context.Context, rng int) {
 		}
 
 		n := last + i
-		key := fmt.Sprintf("ITS-%d", n)
+		key := fmt.Sprintf("%s-%d", b.scanKeyPrefix, n)
 		task, err := b.yougileClient.GetTaskByID(key)
 		if err == nil && task != nil {
 			// found
@@ -1225,11 +1197,7 @@ func (b *Bot) handleReject(c telebot.Context) error {
 			return c.Send("Пользователь не найден.")
 		}
 
-		switch req.Type {
-		case "registration":
-			// Удаляем пользователя из хранилища
-			delete(b.storage.GetUsers(), userID)
-		case "address_change":
+		if req.Type == "address_change" {
 			user.AddressChange = false
 			b.storage.UpdateUser(user)
 		}

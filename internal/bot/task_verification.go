@@ -107,12 +107,10 @@ func (b *Bot) verifyTask(v *TaskVerification) {
 		return
 	}
 
-	if v.HasImage {
-		if !verifyTaskAttachments(foundTask) {
-			b.handleVerificationFailure(v, "Отсутствует или некорректно загружено изображение")
-			return
-		}
-	}
+	// Вложение (если было) уже подтверждено или нет синхронно в момент загрузки —
+	// см. UploadFile/AddComment в photo_handler.go. В реальном TaskDto Yougile нет
+	// поля "attachments" (проверено по актуальной OpenAPI-спецификации), так что
+	// повторно проверить наличие картинки через GetTask здесь невозможно.
 
 	// Если мы дошли до этого места — верификация успешна. Уведомим отправителя и админов.
 	// Сформируем идентификатор задачи для отображения (ExternalID предпочтительнее)
@@ -165,11 +163,6 @@ func verifyTaskContent(task *models.Task, v *TaskVerification) bool {
 	}
 
 	return true
-}
-
-// verifyTaskAttachments проверяет наличие вложений в задаче
-func verifyTaskAttachments(task *models.Task) bool {
-	return len(task.Attachments) > 0
 }
 
 // handleVerificationFailure обрабатывает неудачную проверку
